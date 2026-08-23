@@ -95,10 +95,15 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 
-def _apply_pragmas(conn):
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=250")
+def _apply_pragmas(conn, readonly=False):
+    # each pragma independently: journal_mode=WAL raises on a read-only
+    # connection and must not take busy_timeout down with it
+    for pragma in ((() if readonly else ("PRAGMA journal_mode=WAL",))
+                   + ("PRAGMA synchronous=NORMAL", "PRAGMA busy_timeout=250")):
+        try:
+            conn.execute(pragma)
+        except sqlite3.OperationalError:
+            pass
 
 
 def connect(readonly: bool = False) -> sqlite3.Connection:
@@ -112,10 +117,7 @@ def connect(readonly: bool = False) -> sqlite3.Connection:
     if conn is None:
         conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    try:
-        _apply_pragmas(conn)
-    except sqlite3.OperationalError:
-        pass
+    _apply_pragmas(conn, readonly=readonly)
     return conn
 
 

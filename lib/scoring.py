@@ -89,12 +89,21 @@ def gate(hits, st, ctx, cfg, conn, taus, now=None):
     dedup_i = set(st.get("injected") or [])
     dedup_r = set(st.get("reminded") or [])
 
-    scored, seen = [], set()
+    # scoped+fts unions can repeat an id; keep one copy carrying the best
+    # (most negative) bm25 so a scope-only duplicate can't shadow real relevance
+    merged = {}
     for h in hits:
         hid = h.get("id")
-        if not hid or hid in seen:  # scoped+fts unions can repeat an id
+        if not hid:
             continue
-        seen.add(hid)
+        prev = merged.get(hid)
+        if prev is None:
+            merged[hid] = h
+        elif float(h.get("bm25") or 0.0) < float(prev.get("bm25") or 0.0):
+            merged[hid] = h
+
+    scored = []
+    for hid, h in merged.items():
         try:
             events = db.activation_events(conn, hid, window)
         except Exception:

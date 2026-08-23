@@ -61,9 +61,11 @@ def main(evt):
     db.ensure_schema(conn)
     st = state.load(session, "main")
 
+    # all agents' candidates surface at the main-thread Stop (§12.1; a
+    # subagent's learnings must not die with its context)
     rows = conn.execute(
-        "SELECT * FROM candidate WHERE status='open' AND session_id=? "
-        "AND (agent_id IS NULL OR agent_id='main')", (session,)).fetchall()
+        "SELECT * FROM candidate WHERE status='open' AND session_id=?",
+        (session,)).fetchall()
     cands = [dict(r) for r in rows]
     if session != "unbound":
         cands.extend(_unbound_sweep(conn, session, project, now))

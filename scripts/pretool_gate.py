@@ -129,6 +129,8 @@ def _edit_branch(conn, cfg, st, session, agent, cwd, project, tool, ti, now):
     q = querybuild.fts_query(os.path.basename(fp) + " " + content)
     if q:
         hits = hits + db.search(conn, q, project, k=12)
+    # §5 capability table: quarantined excluded from pretool_gate entirely
+    hits = [h for h in hits if h.get("authority") != "quarantined"]
     SUMMARY["hits"] = len(hits)
     taus = scoring.struggle_adjusted(cfg, st)
     inject, remind = scoring.gate(hits, st, ctx, cfg, conn, taus, now)
@@ -147,15 +149,20 @@ def _bash_branch(conn, cfg, st, session, agent, cwd, project, ti, now):
     deny_w = cfg["scoring"]["deny_weight"]
 
     # ---- deny/ask tier (before injection) ----
+    # identical retry after ANY prior deny (hazard or escalation path) -> ask
     for m in scoped:
-        if not m.get("hazard") or m.get("authority") != "full":
+        if m.get("authority") != "full":
             continue
         sig = "Bash:" + _matched_head(m, heads)
-        if sig in (denied_map.get(m["id"]) or []):  # identical retry -> ask
+        if sig in (denied_map.get(m["id"]) or []):
             db.log_access(conn, m["id"], session, agent, "denied", deny_w, cmd[:200])
             reason = ("Command rerun unchanged after a prior block. "
                       + render.render_ask(m))
             return _decision("ask", reason, cfg)
+    for m in scoped:
+        if not m.get("hazard") or m.get("authority") != "full":
+            continue
+        sig = "Bash:" + _matched_head(m, heads)
         if consequential:
             if m.get("hazard_mode") == "ask":
                 db.log_access(conn, m["id"], session, agent, "denied", deny_w,

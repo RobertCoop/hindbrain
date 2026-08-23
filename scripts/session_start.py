@@ -54,6 +54,16 @@ def _reset_or_load(conn, session, source):
     return st
 
 
+def _session_ended(owner):
+    if owner == "unbound":
+        return False  # unbound rows belong to stop_gate's sweep, not carryover
+    try:
+        with open(state.state_path(owner, "main"), "r", encoding="utf-8") as f:
+            return bool(json.load(f).get("ended"))
+    except (OSError, ValueError):
+        return True  # no state file -> owner is gone; safe to carry
+
+
 def _carry_candidates(conn, session, project):
     try:
         rows = conn.execute(
@@ -69,6 +79,10 @@ def _carry_candidates(conn, session, project):
         except (ValueError, TypeError):
             payload = {}
         if not isinstance(payload, dict) or payload.get("project") != project:
+            continue
+        # never steal from a session that is still live (its own Stop gate
+        # owns these); unbound rows are excluded likewise
+        if not _session_ended(c.get("session_id") or ""):
             continue
         carried.append(c)
     if carried:

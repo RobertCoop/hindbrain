@@ -601,13 +601,21 @@ def cmd_stats(args, conn, cfg, session, project):
     return 0
 
 
+class _Parser(argparse.ArgumentParser):
+    def error(self, message):
+        # §9.1: exit 2 is reserved for refusals; usage errors are user errors
+        self.print_usage(sys.stderr)
+        print(f"mem: error: {message}", file=sys.stderr)
+        raise SystemExit(1)
+
+
 def build_parser():
-    common = argparse.ArgumentParser(add_help=False)
+    common = _Parser(add_help=False)
     common.add_argument("--db", default=argparse.SUPPRESS)
     common.add_argument("--session", default=argparse.SUPPRESS)
 
-    p = argparse.ArgumentParser(prog="mem", parents=[common],
-                                description="hindbrain persistent memory CLI")
+    p = _Parser(prog="mem", parents=[common],
+                description="hindbrain persistent memory CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("save", parents=[common])
