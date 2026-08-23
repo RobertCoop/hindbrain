@@ -1,0 +1,712 @@
+#!/usr/bin/env python3
+"""hindbrain mem CLI (spec §9). Exit codes: 0 ok, 1 user error, 2 refused."""
+import argparse
+import json
+import os
+import re
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from lib import db, ids, log, paths, querybuild, render, scoring, state, witness
+from lib import secrets as secretscan
+
+KINDS = ("gotcha", "decision", "preference", "fact", "procedure", "env")
+SCOPE_TYPES = ("global", "project", "path", "command", "tool")
+AUTH_RANK = {"quarantined": 0, "pending": 1, "standard": 2, "full": 3}
+AUTH_BY_CHANNEL = {"user_witnessed": "full", "observer_witnessed": "standard",
+                   "agent": "pending", "external": "quarantined"}
+
+_NEG = re.compile(r"(?i)\b(not|never|don'?t|do not|instead|avoid|no longer|stop)\b")
+
+
+def emit(lines):
+    text = "\n".join(str(l) for l in lines)
+    out = text.split("\n")
+    if len(out) > 30:
+        out = out[:29] + ["… (truncated)"]
+    print("\n".join(out))
+
+
+def fail(msg):
+    print(f"mem: {msg}", file=sys.stderr)
+    return 1
+
+
+def refuse(msg):
+    print(f"mem: refused: {msg}", file=sys.stderr)
+    return 2
+
+
+def parse_scope(s):
+    st, _, sv = (s or "").partition(":")
+    st = st.strip()
+    sv = sv.strip()
+    if st not in SCOPE_TYPES:
+        raise ValueError(f"scope type must be one of {'|'.join(SCOPE_TYPES)}")
+    if st in ("path", "command", "tool") and not sv:
+        raise ValueError(f"scope {st}: requires a value (e.g. {st}:<value>)")
+    if st in ("global", "project"):
+        sv = ""
+    return st, sv
+
+
+def resolve_mem(conn, mem_id):
+    m = db.get_memory(conn, mem_id)
+    if m is None:
+        raise LookupError(f"memory not found (or ambiguous prefix): {mem_id}")
+    return m
+
+
+def scope_str(m):
+    sv = m.get("scope_value") or ""
+    st = m.get("scope_type") or ""
+    return f"{st}:{sv}" if sv else st
+
+
+def open_candidates(conn, session):
+    # session rows + unbound rows younger than 2h (§3.4 degraded binding)
+    cutoff = int(time.time()) - 7200
+    rows = conn.execute(
+        "SELECT * FROM candidate WHERE status='open' AND "
+        "(session_id = ? OR (session_id = 'unbound' AND ts > ?)) "
+        "ORDER BY ts, id", (session, cutoff)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def pick_candidate(conn, session, ref):
+    cands = open_candidates(conn, session)
+    try:
+        n = int(ref)
+        if 1 <= n <= len(cands):
+            return cands[n - 1]
+        return None
+    except ValueError:
+        pass
+    hits = [c for c in cands if c["id"].startswith(ref)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def token_jaccard(a, b):
+    wa, wb = witness.content_words(a), witness.content_words(b)
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
+
+
+def turn_tainted(conn, session):
+    turn = state.load(session, "main").get("turn", 0)
+    rows = conn.execute(
+        "SELECT data FROM journal WHERE session_id=? AND event='taint' "
+        "ORDER BY ts DESC LIMIT 50", (session,)).fetchall()
+    for r in rows:
+        try:
+            d = json.loads(r["data"])
+        except (ValueError, TypeError):
+            continue
+        if isinstance(d, dict) and d.get("turn") == turn:
+            return True
+    return False
+
+
+def decide_channel(body, session, conn, cfg, channel_flag, cand):
+    if channel_flag == "external":
+        return "external", "declared --channel external"
+    notes = []
+    if channel_flag == "user":
+        notes.append("--channel user ignored (witness test decides)")
+    if cand is not None and witness.observer_witnessed(cand):
+        notes.append("observer-recorded candidate evidence")
+        return "observer_witnessed", "; ".join(notes)
+    if witness.user_witnessed(body, session, conn, cfg):
+        notes.append("matches a logged user turn")
+        return "user_witnessed", "; ".join(notes)
+    notes.append("agent-authored, no witness")
+    return "agent", "; ".join(notes)
+
+
+def apply_corroborate(conn, cfg, session, mem_id):
+    conn.execute("UPDATE memory SET corroborations = corroborations + 1 "
+                 "WHERE id = ?", (mem_id,))
+    conn.commit()
+    db.log_access(conn, mem_id, session, "main", "cited")
+    db.journal(conn, session, "main", "corroborate", {"memory_id": mem_id})
+    m = db.get_memory(conn, mem_id)
+    note = ""
+    if m["authority"] == "pending" and m["corroborations"] >= 2:
+        conn.execute("UPDATE memory SET authority='standard' WHERE id=?", (mem_id,))
+        conn.commit()
+        note = "promoted pending -> standard"
+    elif m["authority"] == "quarantined" and m["corroborations"] >= 2:
+        sess = set()
+        rows = conn.execute(
+            "SELECT session_id, data FROM journal WHERE event='corroborate' "
+            "ORDER BY ts DESC LIMIT 500").fetchall()
+        for r in rows:
+            try:
+                d = json.loads(r["data"])
+            except (ValueError, TypeError):
+                continue
+            if isinstance(d, dict) and d.get("memory_id") == mem_id and r["session_id"]:
+                sess.add(r["session_id"])
+        if len(sess) >= 2:
+            conn.execute("UPDATE memory SET authority='standard' WHERE id=?", (mem_id,))
+            conn.commit()
+            note = "promoted quarantined -> standard (distinct-session corroborations)"
+        else:
+            note = f"quarantined: {len(sess)}/2 distinct sessions so far"
+    return db.get_memory(conn, mem_id), note
+
+
+def insert_memory(conn, cfg, session, *, title, body, kind, scope_type, scope_value,
+                  project, tags, channel, authority, hazard, hazard_mode,
+                  supersedes, prior, source_event):
+    mid = ids.ulid()
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO memory (id,title,body,kind,scope_type,scope_value,project,tags,"
+        "channel,authority,hazard,hazard_mode,supersedes,prior,source_session,"
+        "source_event,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (mid, title, body, kind, scope_type, scope_value, project, tags,
+         channel, authority, int(hazard), hazard_mode, supersedes, prior,
+         session, source_event, now))
+    # synthetic prior row (§6.3); not a use, so no access_count bump
+    conn.execute(
+        "INSERT INTO access_log(memory_id,session_id,agent_id,ts,event,weight) "
+        "VALUES (?,?,?,?,'synthetic',?)", (mid, session, "main", now, prior))
+    conn.commit()
+    return mid
+
+
+# ---- commands ----
+
+def cmd_save(args, conn, cfg, session, project):
+    body = args.body.strip()
+    reason = secretscan.scan((args.title or "") + "\n" + body)
+    if reason:
+        return refuse(f"secret detected ({reason}); not saved")
+    if not 20 <= len(body) <= 2000:
+        return fail(f"body must be 20..2000 chars (got {len(body)})")
+    try:
+        scope_type, scope_value = parse_scope(args.scope)
+    except ValueError as e:
+        return fail(str(e))
+    if args.hazard_mode and not args.hazard:
+        return fail("--hazard-mode requires --hazard")
+    title = (args.title or body[:80]).strip()[:80]
+    mem_project = "" if scope_type == "global" else project
+
+    cand = None
+    if args.from_candidate:
+        cand = pick_candidate(conn, session, args.from_candidate)
+        if cand is None:
+            return fail(f"no open candidate {args.from_candidate} (see mem queue)")
+
+    # resolution pass (§9.3 step 3)
+    contradiction = None
+    q = querybuild.fts_query(body)
+    near = db.search(conn, q, mem_project or project, k=3) if q else []
+    best, best_j = None, 0.0
+    for n in near:
+        j = token_jaccard(title + " " + body,
+                          (n.get("title") or "") + " " + (n.get("body") or ""))
+        if j > best_j:
+            best, best_j = n, j
+    if best is not None:
+        conflict = _NEG.search(body) is not None
+        conflict = conflict != (_NEG.search(best.get("body") or "") is not None)
+        if best_j >= 0.75 and not conflict:
+            m, note = apply_corroborate(conn, cfg, session, best["id"])
+            if cand:
+                conn.execute("UPDATE candidate SET status='saved' WHERE id=?",
+                             (cand["id"],))
+                conn.commit()
+            log.metric({"hook": "mem", "cmd": "save", "resolved": "corroborate",
+                        "id": best["id"], "session": session})
+            lines = [f"corroborated existing [{m['id']}] (jaccard {best_j:.2f}); "
+                     "no new record inserted"]
+            if note:
+                lines.append(note)
+            emit(lines)
+            return 0
+        if best_j >= 0.55 and conflict:
+            contradiction = (best["id"], best_j)
+
+    channel, why = decide_channel(body, session, conn, cfg, args.channel, cand)
+    authority = AUTH_BY_CHANNEL[channel]
+    if turn_tainted(conn, session):
+        cap = "quarantined" if channel == "external" else "pending"
+        if AUTH_RANK[authority] > AUTH_RANK[cap]:
+            authority = cap
+            why += f"; tainted turn capped authority at {cap}"
+
+    prior = cfg["scoring"]["prior_default"]
+    if cand:
+        prior = {"P0": cfg["scoring"]["prior_p0"], "P1": cfg["scoring"]["prior_p1"],
+                 "P2": cfg["scoring"]["prior_p2"]}.get(cand["priority"], prior)
+
+    mid = insert_memory(
+        conn, cfg, session, title=title, body=body, kind=args.kind,
+        scope_type=scope_type, scope_value=scope_value, project=mem_project,
+        tags=args.tags or "", channel=channel, authority=authority,
+        hazard=bool(args.hazard), hazard_mode=args.hazard_mode or "deny",
+        supersedes=None, prior=prior,
+        source_event=f"candidate:{cand['id']}" if cand else "cli")
+    if cand:
+        conn.execute("UPDATE candidate SET status='saved' WHERE id=?", (cand["id"],))
+        conn.commit()
+    lines = [f"saved [{mid}] authority={authority}", f"why: {channel} channel — {why}"]
+    if contradiction:
+        db.journal(conn, session, "main", "contradiction_flag",
+                   {"new_id": mid, "near_id": contradiction[0],
+                    "jaccard": round(contradiction[1], 2)})
+        lines.append(f"note: possible conflict with [{contradiction[0]}] "
+                     f"(jaccard {contradiction[1]:.2f}); flagged for consolidator — "
+                     f"consider mem supersede {contradiction[0]}")
+    log.metric({"hook": "mem", "cmd": "save", "id": mid, "authority": authority,
+                "channel": channel, "session": session})
+    emit(lines)
+    return 0
+
+
+def cmd_get(args, conn, cfg, session, project):
+    try:
+        m = resolve_mem(conn, args.id)
+    except LookupError as e:
+        return fail(str(e))
+    db.log_access(conn, m["id"], session, "main", "fetched",
+                  weight=cfg["scoring"]["fetch_weight"])
+    def _fn(st):
+        if m["id"] not in st["fetched"]:
+            st["fetched"].append(m["id"])
+    try:
+        state.update(session, "main", _fn)
+    except Exception:
+        pass
+    log.metric({"hook": "mem", "cmd": "fetch", "id": m["id"], "session": session})
+    now = int(time.time())
+    haz = f" hazard({m['hazard_mode']})" if m["hazard"] else ""
+    pin = " pinned" if m["pinned"] else ""
+    lines = [
+        f"[{m['id']}] {m['title']}",
+        f"{m['kind']} · {scope_str(m)} · project={m['project'] or '(global)'}"
+        f" · tags={m['tags'] or '-'}",
+        f"channel={m['channel']} authority={m['authority']} status={m['status']}"
+        f"{haz}{pin}",
+        f"corroborations={m['corroborations']} · saved {render.age(m['created_at'], now)}"
+        f" · used {m['access_count']}×"
+        + (f" · supersedes {m['supersedes']}" if m["supersedes"] else ""),
+        "body:", m["body"],
+    ]
+    emit(lines)
+    return 0
+
+
+def cmd_search(args, conn, cfg, session, project):
+    q = querybuild.fts_query(args.terms)
+    if not q:
+        emit(["no results (empty query)"])
+        return 0
+    if args.all_projects:
+        try:
+            rows = conn.execute(
+                "SELECT m.*, bm25(memory_fts) AS bm25 FROM memory_fts "
+                "JOIN memory m ON m.rowid = memory_fts.rowid "
+                "WHERE memory_fts MATCH ? AND m.status='active' "
+                "ORDER BY bm25(memory_fts) ASC LIMIT ?", (q, args.k)).fetchall()
+            hits = [dict(r) for r in rows]
+        except Exception:
+            hits = []
+    else:
+        hits = db.search(conn, q, project, k=args.k)
+    if not hits:
+        emit(["no results"])
+        return 0
+    now = int(time.time())
+    ctx = scoring.Ctx(session=session, project=project, cwd=os.getcwd())
+    lines = []
+    for h in hits:
+        try:
+            act = scoring.activation(
+                db.activation_events(conn, h["id"], cfg["scoring"]["act_window"]),
+                now, cfg)
+            s = scoring.score(h, ctx, cfg, act)
+        except Exception:
+            s = 0.0
+        lines.append(f"{h['id']} · {s:.2f} · {h['title']} · {scope_str(h)}"
+                     f" · {render.age(h['created_at'], now)}")
+    emit(lines)
+    return 0
+
+
+def cmd_list(args, conn, cfg, session, project):
+    sql = "SELECT * FROM memory WHERE status='active'"
+    params = []
+    if args.kind:
+        sql += " AND kind=?"
+        params.append(args.kind)
+    if args.project:
+        sql += " AND project IN (?, '')"
+        params.append(project)
+    if args.pinned:
+        sql += " AND pinned=1"
+    sql += " ORDER BY created_at DESC LIMIT 29"
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        emit(["no memories match"])
+        return 0
+    now = int(time.time())
+    lines = []
+    for r in rows:
+        m = dict(r)
+        pin = " ·pin" if m["pinned"] else ""
+        lines.append(f"{m['id']} · {m['kind']} · {m['authority']}{pin} · "
+                     f"{m['title']} ({scope_str(m)} · {render.age(m['created_at'], now)})")
+    emit(lines)
+    return 0
+
+
+def cmd_queue(args, conn, cfg, session, project):
+    cands = open_candidates(conn, session)
+    if not cands:
+        emit(["queue empty"])
+        return 0
+    lines = []
+    for i, c in enumerate(cands, 1):
+        try:
+            payload = json.loads(c["payload"])
+        except (ValueError, TypeError):
+            payload = {}
+        snippet = ""
+        if isinstance(payload, dict):
+            snippet = str(payload.get("text")
+                          or payload.get("delta")
+                          or payload.get("ok_cmd") or "")
+        snippet = " ".join(snippet.split())[:120].replace('"', "'")
+        lines.append(f"({i}) [{c['priority']} {c['signal']}] \"{snippet}\"")
+        if c.get("near_match"):
+            lines.append(f"    near-match [{c['near_match']}] — consider: "
+                         f"mem corroborate {c['near_match']}")
+        elif c.get("draft_cmd"):
+            lines.append(f"    draft: {c['draft_cmd']}")
+    emit(lines)
+    return 0
+
+
+def cmd_drop(args, conn, cfg, session, project):
+    cand = pick_candidate(conn, session, args.n)
+    if cand is None:
+        return fail(f"no open candidate {args.n} (see mem queue)")
+    conn.execute("UPDATE candidate SET status='dropped' WHERE id=?", (cand["id"],))
+    conn.commit()
+    log.metric({"hook": "mem", "cmd": "drop", "candidate": cand["id"],
+                "signal": cand["signal"], "session": session})
+    emit([f"dropped candidate ({args.n}) [{cand['signal']}]"])
+    return 0
+
+
+def cmd_corroborate(args, conn, cfg, session, project):
+    try:
+        m = resolve_mem(conn, args.id)
+    except LookupError as e:
+        return fail(str(e))
+    m, note = apply_corroborate(conn, cfg, session, m["id"])
+    log.metric({"hook": "mem", "cmd": "corroborate", "id": m["id"],
+                "session": session})
+    lines = [f"corroborated [{m['id']}] (count={m['corroborations']}, "
+             f"authority={m['authority']})"]
+    if note:
+        lines.append(note)
+    emit(lines)
+    return 0
+
+
+def cmd_confirm(args, conn, cfg, session, project):
+    try:
+        m = resolve_mem(conn, args.id)
+    except LookupError as e:
+        return fail(str(e))
+    if witness.confirm_witnessed(m, session, conn, cfg):
+        conn.execute("UPDATE memory SET authority='full' WHERE id=?", (m["id"],))
+        conn.commit()
+        db.log_access(conn, m["id"], session, "main", "cited")
+        db.journal(conn, session, "main", "confirm", {"memory_id": m["id"]})
+        log.metric({"hook": "mem", "cmd": "confirm", "id": m["id"],
+                    "session": session})
+        emit([f"confirmed [{m['id']}] authority=full (user confirmation witnessed)"])
+        return 0
+    # AM-5 downgrade
+    m, note = apply_corroborate(conn, cfg, session, m["id"])
+    log.metric({"hook": "mem", "cmd": "confirm_downgraded", "id": m["id"],
+                "session": session})
+    lines = [f"no user confirmation found in the last 5 user turns — "
+             f"downgraded to corroborate [{m['id']}] "
+             f"(count={m['corroborations']}, authority={m['authority']})",
+             "full authority requires the user to confirm this note in their own words"]
+    if note:
+        lines.append(note)
+    emit(lines)
+    return 0
+
+
+def cmd_supersede(args, conn, cfg, session, project):
+    try:
+        old = resolve_mem(conn, args.id)
+    except LookupError as e:
+        return fail(str(e))
+    body = args.body.strip()
+    reason = secretscan.scan((args.title or "") + "\n" + body)
+    if reason:
+        return refuse(f"secret detected ({reason}); not saved")
+    if not 20 <= len(body) <= 2000:
+        return fail(f"body must be 20..2000 chars (got {len(body)})")
+    kind = args.kind or old["kind"]
+    if args.scope:
+        try:
+            scope_type, scope_value = parse_scope(args.scope)
+        except ValueError as e:
+            return fail(str(e))
+    else:
+        scope_type, scope_value = old["scope_type"], old["scope_value"]
+    title = (args.title or body[:80]).strip()[:80]
+
+    channel, why = decide_channel(body, session, conn, cfg, None, None)
+    authority = AUTH_BY_CHANNEL[channel]
+    if turn_tainted(conn, session):
+        if AUTH_RANK[authority] > AUTH_RANK["pending"]:
+            authority = "pending"
+            why += "; tainted turn capped authority at pending"
+
+    now = int(time.time())
+    mid = insert_memory(
+        conn, cfg, session, title=title, body=body, kind=kind,
+        scope_type=scope_type, scope_value=scope_value, project=old["project"],
+        tags=args.tags if args.tags is not None else old["tags"],
+        channel=channel, authority=authority, hazard=bool(old["hazard"]),
+        hazard_mode=old["hazard_mode"], supersedes=old["id"],
+        prior=cfg["scoring"]["prior_default"], source_event=f"supersede:{old['id']}")
+    conn.execute("UPDATE memory SET status='superseded', invalidated_at=? WHERE id=?",
+                 (now, old["id"]))
+    conn.commit()
+    db.log_access(conn, old["id"], session, "main", "cited")
+    log.metric({"hook": "mem", "cmd": "supersede", "id": mid, "old": old["id"],
+                "session": session})
+    emit([f"saved [{mid}] authority={authority}, supersedes [{old['id']}] "
+          f"(now superseded)", f"why: {channel} channel — {why}"])
+    return 0
+
+
+def cmd_refute(args, conn, cfg, session, project):
+    try:
+        m = resolve_mem(conn, args.id)
+    except LookupError as e:
+        return fail(str(e))
+    conn.execute("UPDATE memory SET status='refuted', invalidated_at=? WHERE id=?",
+                 (int(time.time()), m["id"]))
+    conn.commit()
+    data = {"memory_id": m["id"]}
+    if args.note:
+        data["note"] = args.note[:500]
+    db.journal(conn, session, "main", "refute", data)
+    log.metric({"hook": "mem", "cmd": "refute", "id": m["id"], "session": session})
+    emit([f"refuted [{m['id']}]; excluded from surfacing pending consolidator review"])
+    return 0
+
+
+def _set_pin(args, conn, cfg, session, project, value):
+    try:
+        m = resolve_mem(conn, args.id)
+    except LookupError as e:
+        return fail(str(e))
+    conn.execute("UPDATE memory SET pinned=? WHERE id=?", (value, m["id"]))
+    conn.commit()
+    emit([f"{'pinned' if value else 'unpinned'} [{m['id']}]"])
+    return 0
+
+
+def cmd_audit(args, conn, cfg, session, project):
+    try:
+        m = resolve_mem(conn, args.id)
+    except LookupError as e:
+        return fail(str(e))
+    now = int(time.time())
+    lines = [f"[{m['id']}] {m['title']}",
+             f"{m['kind']} · {scope_str(m)} · project={m['project'] or '(global)'}",
+             f"channel={m['channel']} authority={m['authority']} status={m['status']}"
+             f" corroborations={m['corroborations']} prior={m['prior']}",
+             f"source: session={m['source_session'] or '-'}"
+             f" event={m['source_event'] or '-'}"
+             f" · created {render.age(m['created_at'], now)} ago"]
+    # chain backwards (what this supersedes)
+    cur, depth = m, 0
+    while cur.get("supersedes") and depth < 5:
+        prev = db.get_memory(conn, cur["supersedes"])
+        if prev is None:
+            lines.append(f"supersedes: {cur['supersedes']} (missing)")
+            break
+        lines.append(f"supersedes: [{prev['id']}] \"{prev['title']}\" ({prev['status']})")
+        cur, depth = prev, depth + 1
+    # chain forwards (what superseded this)
+    rows = conn.execute("SELECT id, title, status FROM memory WHERE supersedes=?",
+                        (m["id"],)).fetchall()
+    for r in rows:
+        lines.append(f"superseded by: [{r['id']}] \"{r['title']}\" ({r['status']})")
+    if m.get("invalidated_at"):
+        lines.append(f"invalidated {render.age(m['invalidated_at'], now)} ago")
+    acc = conn.execute(
+        "SELECT ts, event, weight, session_id FROM access_log WHERE memory_id=? "
+        "ORDER BY ts DESC LIMIT 10", (m["id"],)).fetchall()
+    lines.append(f"access log (last {len(acc)}):")
+    for a in acc:
+        stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(a["ts"]))
+        lines.append(f"  {stamp} {a['event']} w={a['weight']:g} "
+                     f"session={a['session_id'] or '-'}")
+    emit(lines)
+    return 0
+
+
+def cmd_stats(args, conn, cfg, session, project):
+    def counts(col):
+        rows = conn.execute(
+            f"SELECT {col}, COUNT(*) AS n FROM memory GROUP BY {col} ORDER BY n DESC"
+        ).fetchall()
+        return " ".join(f"{r[0]}={r['n']}" for r in rows) or "-"
+    total = conn.execute("SELECT COUNT(*) FROM memory").fetchone()[0]
+    open_c = conn.execute(
+        "SELECT COUNT(*) FROM candidate WHERE status='open'").fetchone()[0]
+    lines = [f"memories: {total} (open candidates: {open_c})",
+             f"by kind:      {counts('kind')}",
+             f"by authority: {counts('authority')}",
+             f"by status:    {counts('status')}"]
+    meta = conn.execute("SELECT key, value FROM meta ORDER BY key").fetchall()
+    shown = 0
+    for r in meta:
+        if r["key"] == "schema_version":
+            continue
+        if r["key"] == "last_consolidation":
+            try:
+                stamp = time.strftime("%Y-%m-%d %H:%M",
+                                      time.localtime(int(float(r["value"]))))
+                lines.append(f"last consolidation: {stamp}")
+            except (ValueError, TypeError):
+                lines.append(f"last consolidation: {r['value']}")
+            continue
+        lines.append(f"{r['key']}: {r['value']}")
+        shown += 1
+        if shown >= 20:
+            break
+    if shown == 0:
+        lines.append("no acceptance metrics yet (consolidator has not run)")
+    emit(lines)
+    return 0
+
+
+def build_parser():
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--db", default=argparse.SUPPRESS)
+    common.add_argument("--session", default=argparse.SUPPRESS)
+
+    p = argparse.ArgumentParser(prog="mem", parents=[common],
+                                description="hindbrain persistent memory CLI")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sp = sub.add_parser("save", parents=[common])
+    sp.add_argument("--kind", required=True, choices=KINDS)
+    sp.add_argument("--scope", required=True, metavar="TYPE:VALUE")
+    sp.add_argument("--tags", default="")
+    sp.add_argument("--title")
+    sp.add_argument("--hazard", action="store_true")
+    sp.add_argument("--hazard-mode", choices=("deny", "ask"))
+    sp.add_argument("--channel", choices=("external", "user"))
+    sp.add_argument("--from-candidate", metavar="N")
+    sp.add_argument("body")
+    sp.set_defaults(func=cmd_save)
+
+    sp = sub.add_parser("get", parents=[common])
+    sp.add_argument("id")
+    sp.set_defaults(func=cmd_get)
+
+    sp = sub.add_parser("search", parents=[common])
+    sp.add_argument("terms")
+    sp.add_argument("--all-projects", action="store_true")
+    sp.add_argument("-k", type=int, default=8)
+    sp.set_defaults(func=cmd_search)
+
+    sp = sub.add_parser("list", parents=[common])
+    sp.add_argument("--kind", choices=KINDS)
+    sp.add_argument("--project", action="store_true")
+    sp.add_argument("--pinned", action="store_true")
+    sp.set_defaults(func=cmd_list)
+
+    sp = sub.add_parser("queue", parents=[common])
+    sp.set_defaults(func=cmd_queue)
+
+    sp = sub.add_parser("drop", parents=[common])
+    sp.add_argument("n")
+    sp.set_defaults(func=cmd_drop)
+
+    sp = sub.add_parser("corroborate", parents=[common])
+    sp.add_argument("id")
+    sp.set_defaults(func=cmd_corroborate)
+
+    sp = sub.add_parser("confirm", parents=[common])
+    sp.add_argument("id")
+    sp.set_defaults(func=cmd_confirm)
+
+    sp = sub.add_parser("supersede", parents=[common])
+    sp.add_argument("id")
+    sp.add_argument("body")
+    sp.add_argument("--kind", choices=KINDS)
+    sp.add_argument("--scope", metavar="TYPE:VALUE")
+    sp.add_argument("--tags")
+    sp.add_argument("--title")
+    sp.set_defaults(func=cmd_supersede)
+
+    sp = sub.add_parser("refute", parents=[common])
+    sp.add_argument("id")
+    sp.add_argument("note", nargs="?")
+    sp.set_defaults(func=cmd_refute)
+
+    sp = sub.add_parser("pin", parents=[common])
+    sp.add_argument("id")
+    sp.set_defaults(func=lambda *a: _set_pin(*a, 1))
+
+    sp = sub.add_parser("unpin", parents=[common])
+    sp.add_argument("id")
+    sp.set_defaults(func=lambda *a: _set_pin(*a, 0))
+
+    sp = sub.add_parser("audit", parents=[common])
+    sp.add_argument("id")
+    sp.set_defaults(func=cmd_audit)
+
+    sp = sub.add_parser("stats", parents=[common])
+    sp.set_defaults(func=cmd_stats)
+    return p
+
+
+def main(argv):
+    args = build_parser().parse_args(argv)
+    if getattr(args, "db", None):
+        os.environ["HINDBRAIN_DB"] = os.path.abspath(args.db)
+    session = (getattr(args, "session", None)
+               or os.environ.get("HINDBRAIN_SESSION") or "unbound")
+    try:
+        conn = db.connect()
+        db.ensure_schema(conn)
+    except Exception as e:
+        return fail(f"cannot open database: {e}")
+    try:
+        cfg = paths.load_config()
+        project = paths.gitroot(os.getcwd())
+        return args.func(args, conn, cfg, session, project)
+    except Exception as e:
+        return fail(str(e))
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
