@@ -13,6 +13,7 @@ edit_scan_bytes = 4096
 
 [scoring]
 rel_k = 4.0            # rel = r/(r+k), r = -bm25
+rel_match_floor = 0.3  # min rel for a true FTS match or exact scope hit; FTS5 IDF collapses in small stores (A3)
 act_floor = 0.45       # score uses (act_floor + (1-act_floor)*act)
 act_decay_d = 0.5
 act_window = 30        # last N access events

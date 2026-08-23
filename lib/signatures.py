@@ -95,9 +95,18 @@ def head(cmd_tokens):
         return ()
     first = os.path.basename(cmd_tokens[0])
     if first in MULTITOOLS:
+        skip_next = False
         for t in cmd_tokens[1:]:
-            if not t.startswith("-"):
-                return (first, t)
+            if skip_next:
+                skip_next = False
+                continue
+            if t.startswith("--"):
+                continue
+            if t.startswith("-"):
+                # short option: next token is its argument (git -C dir, docker -H host)
+                skip_next = len(t) == 2
+                continue
+            return (first, t)
     return (first,)
 
 
