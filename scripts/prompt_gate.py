@@ -61,7 +61,12 @@ def _hash_words(words):
 
 def _journal_event(conn, cfg, session, project, turn, event, text):
     if cfg["security"]["redact_journal"]:
-        data = {"hash_words": _hash_words(witness.content_words(text)),
+        words = witness.content_words(text)
+        # AM-5: content_words drops stopwords ("yes"), but confirm_witnessed's
+        # hashed branch checks cue-word hashes — keep any cue token from the
+        # raw text so both journal modes behave identically.
+        words |= witness.CUES & set(witness._tokens(text))
+        data = {"hash_words": _hash_words(words),
                 "project": project, "turn": turn}
     else:
         data = {"text": text, "project": project, "turn": turn}

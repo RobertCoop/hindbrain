@@ -591,7 +591,13 @@ def cmd_stats(args, conn, cfg, session, project):
             except (ValueError, TypeError):
                 lines.append(f"last consolidation: {r['value']}")
             continue
-        lines.append(f"{r['key']}: {r['value']}")
+        if r["key"] == "deny_rate_per_100_bash":
+            lines.append(f"deny rate (30d): {r['value']} per 100 Bash calls"
+                         " (alert if > 1)")
+        elif r["key"] == "p95_gate_ms":
+            lines.append(f"p95 gate latency: {r['value']} ms (rolling)")
+        else:
+            lines.append(f"{r['key']}: {r['value']}")
         shown += 1
         if shown >= 20:
             break

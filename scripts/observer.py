@@ -265,6 +265,10 @@ def main(evt):
 
     if tool == "Bash":
         cmd = str(ti.get("command") or "")
+        subs = signatures.subcommands(cmd)
+        db.journal(conn, session, agent, "tool_ok", {
+            "tool": "Bash",
+            "cmd_head": signatures.head_str(subs[0]) if subs else ""})
         _record_struggle(session, agent, cfg, "ok")
         _learned_fix(conn, cfg, session, agent, project, ti, cmd, summary)
         return None, summary

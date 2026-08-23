@@ -313,7 +313,9 @@ def graduation_proposals(conn, cfg, now):
     proposals = []
     for project, sess in sessions_by_project.items():
         recent = [sid for _, sid in sorted(sess, reverse=True)[:10]]
-        if len(recent) < 4:  # too few sessions for a coverage claim
+        # Spec rule: coverage >= 50% over the last min(10, available) sessions;
+        # guard only the degenerate single-session case.
+        if len(recent) < 2:
             continue
         marks = ",".join("?" for _ in recent)
         mems = conn.execute(
@@ -344,6 +346,31 @@ def _gini(values):
     return cum / (n * total)
 
 
+def _p95_gate_ms():
+    # Rolling p95 gate latency over the dur_ms field of the last ~2000
+    # logs/metrics.jsonl lines, overall across the *_gate hooks (the choice
+    # is documented in the promotions report). None when no samples exist.
+    path = os.path.join(paths.data_dir(), "logs", "metrics.jsonl")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()[-2000:]
+    except OSError:
+        return None
+    durs = []
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if (isinstance(d, dict) and str(d.get("hook") or "").endswith("_gate")
+                and isinstance(d.get("dur_ms"), (int, float))):
+            durs.append(float(d["dur_ms"]))
+    if not durs:
+        return None
+    durs.sort()
+    return durs[min(len(durs) - 1, round(0.95 * (len(durs) - 1)))]
+
+
 def metrics_rollup(conn, cfg, now):
     cut = now - 30 * DAY
     reminded = conn.execute(
@@ -363,19 +390,36 @@ def metrics_rollup(conn, cfg, now):
     denies = conn.execute(
         "SELECT COUNT(*) AS n FROM access_log WHERE event='denied' AND ts > ?",
         (cut,)).fetchone()["n"]
+    bash_calls = 0
+    for r in conn.execute(
+            "SELECT data FROM journal WHERE event IN ('tool_ok','tool_fail') "
+            "AND ts > ?", (cut,)).fetchall():
+        try:
+            d = json.loads(r["data"])
+        except (ValueError, TypeError):
+            continue
+        if isinstance(d, dict) and d.get("tool") == "Bash":
+            bash_calls += 1
+    deny_rate = (100.0 * denies / bash_calls) if bash_calls else 0.0
+    p95 = _p95_gate_ms()
     store = {r["status"]: r["n"] for r in conn.execute(
         "SELECT status, COUNT(*) AS n FROM memory GROUP BY status").fetchall()}
     gini = _gini([r["access_count"] for r in conn.execute(
         "SELECT access_count FROM memory WHERE status='active'").fetchall()])
-    for key, val in (("acceptance_rate", f"{acceptance:.4f}"),
-                     ("nudge_dispositions", json.dumps(dispositions)),
-                     ("deny_count_30d", str(denies)),
-                     ("store_size", json.dumps(store)),
-                     ("gini_access", f"{gini:.4f}")):
+    kv = [("acceptance_rate", f"{acceptance:.4f}"),
+          ("nudge_dispositions", json.dumps(dispositions)),
+          ("deny_count_30d", str(denies)),
+          ("deny_rate_per_100_bash", f"{deny_rate:.2f}"),
+          ("store_size", json.dumps(store)),
+          ("gini_access", f"{gini:.4f}")]
+    if p95 is not None:
+        kv.append(("p95_gate_ms", f"{p95:.0f}"))
+    for key, val in kv:
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, val))
     conn.commit()
     return {"acceptance": acceptance, "gini": gini, "denies": denies,
-            "store": store, "dispositions": dispositions}
+            "bash_calls": bash_calls, "deny_rate": deny_rate,
+            "p95_gate_ms": p95, "store": store, "dispositions": dispositions}
 
 
 def promotions_report(cfg, proposals, rollup):
@@ -384,6 +428,11 @@ def promotions_report(cfg, proposals, rollup):
         alerts.append(f"- Gini(access_count) = {rollup['gini']:.2f} > 0.85 — "
                       f"retrieval is concentrated on very few notes; review "
                       f"stale or over-broad memories.")
+    if rollup.get("deny_rate", 0.0) > 1.0:
+        alerts.append(
+            f"- Deny rate = {rollup['deny_rate']:.2f} per 100 Bash calls over "
+            f"30d ({rollup['denies']} denies / {rollup.get('bash_calls', 0)} "
+            f"Bash calls; > 1) — hazard notes look miscalibrated (spec §14).")
     tau_hi = cfg.get("thresholds", {}).get("tau_hi", 0.5)
     if rollup["acceptance"] > 0.15 and tau_hi > 1.0:
         alerts.append(
@@ -401,6 +450,10 @@ def promotions_report(cfg, proposals, rollup):
                      + "\n".join(proposals))
     if alerts:
         parts.append("## Alerts\n" + "\n".join(alerts))
+    if rollup.get("p95_gate_ms") is not None:
+        parts.append(f"## Gate latency\np95 = {rollup['p95_gate_ms']:.0f} ms — "
+                     f"overall across the *_gate hooks, from the dur_ms field "
+                     f"of the last ~2000 logs/metrics.jsonl lines.")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n\n".join(parts) + "\n")
     return len(proposals) + len(alerts)
