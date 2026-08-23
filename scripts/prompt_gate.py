@@ -112,11 +112,15 @@ def _near_match(conn, project, body):
 
 def _enqueue(conn, session, agent, priority, signal, payload, draft_cmd,
              near_match=None):
+    cid = ids.ulid()
+    if draft_cmd and draft_cmd.startswith("mem save"):
+        # links §9.3 step 4: candidate -> saved, prior from priority
+        draft_cmd = f"{draft_cmd} --from-candidate {cid}"
     try:
         conn.execute(
             "INSERT INTO candidate(id, session_id, agent_id, ts, priority, signal, "
             "payload, draft_cmd, near_match) VALUES (?,?,?,?,?,?,?,?,?)",
-            (ids.ulid(), session, agent, int(time.time()), priority, signal,
+            (cid, session, agent, int(time.time()), priority, signal,
              json.dumps(payload), draft_cmd, near_match))
         conn.commit()
     except sqlite3.OperationalError:

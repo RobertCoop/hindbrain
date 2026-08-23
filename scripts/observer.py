@@ -92,11 +92,15 @@ def _enqueue(conn, session, agent, priority, signal, payload, draft_cmd,
     payload = dict(payload)
     payload.setdefault("project", project)  # AM-2 unbound sweep scoping
     near = _near_match(conn, project, dedup_text)
+    cid = ids.ulid()
+    if draft_cmd and draft_cmd.startswith("mem save"):
+        # links §9.3 step 4: candidate -> saved, prior from priority
+        draft_cmd = f"{draft_cmd} --from-candidate {cid}"
     try:
         conn.execute(
             "INSERT INTO candidate(id, session_id, agent_id, ts, priority, "
             "signal, payload, draft_cmd, near_match) VALUES (?,?,?,?,?,?,?,?,?)",
-            (ids.ulid(), session, agent, int(time.time()), priority, signal,
+            (cid, session, agent, int(time.time()), priority, signal,
              json.dumps(payload), draft_cmd, near))
         conn.commit()
         return True
