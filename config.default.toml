@@ -1,0 +1,61 @@
+[thresholds]
+tau_hi = 9.9           # remind-only rollout; set to 0.50 after acceptance > 0.15 — see mem stats
+tau_lo = 0.25          # remind at/above
+struggle_factor = 0.75 # multiply both taus while struggling (§8.3)
+
+[budgets]
+inject_max_items = 3
+inject_max_chars_each = 1200
+inject_max_chars_total = 4000
+remind_max_items = 5
+output_hard_cap = 9500
+edit_scan_bytes = 4096
+
+[scoring]
+rel_k = 4.0            # rel = r/(r+k), r = -bm25
+act_floor = 0.45       # score uses (act_floor + (1-act_floor)*act)
+act_decay_d = 0.5
+act_window = 30        # last N access events
+auth_full = 1.00
+auth_standard = 0.85
+auth_pending = 0.65
+auth_quarantined = 0.45
+boost_scope_exact = 1.5
+boost_project = 1.15
+prior_p0 = 3.0
+prior_p1 = 3.0
+prior_p2 = 2.0
+prior_default = 1.0
+fetch_weight = 3.0     # escalation bump for fetched-after-remind
+deny_weight = 3.0
+
+[nudge]
+cooldown_turns = 3
+max_per_session = 3
+max_candidates_shown = 3
+strict = false
+
+[struggle]
+fail_threshold = 3     # tool_fail events in window
+churn_threshold = 4    # edits to same file in window
+window_events = 15
+reset_success_streak = 5
+
+[decay]                # per-kind default ttl_days (ScrubJay-style); 0 = never
+env = 45
+gotcha = 0             # decays via activation only; refresh on use
+decision = 0
+preference = 0
+fact = 180
+procedure = 0
+
+[hazards]
+consequential_heads = ["rm","dd","mkfs","git","terraform","kubectl","aws","gcloud","az","psql","mysql","alembic","flyway","docker","helm","curl","ssh","scp","rsync"]
+consequential_patterns = ["git\\s+push\\s+.*--force", "git\\s+push\\s+-f\\b", "rm\\s+-rf", "drop\\s+table", "terraform\\s+apply", "kubectl\\s+delete", "helm\\s+(install|upgrade|uninstall)", "docker\\s+system\\s+prune", "curl[^|]*\\|\\s*(ba)?sh"]
+
+[security]
+redact_journal = false # true: store SHA256(word-set) instead of raw user prompts (§5.3 uses hashes)
+llm_passes = false     # consolidator claude -p passes (v1.1)
+
+[general]
+enabled = true         # config-level kill switch (in addition to HINDBRAIN_DISABLE env)

@@ -1,0 +1,49 @@
+{
+  "description": "hindbrain: retrieval-gated persistent memory",
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [ { "type": "command", "command": "python3",
+          "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session_start.py"], "timeout": 10 } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "python3",
+          "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/prompt_gate.py"], "timeout": 5 } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [ { "type": "command", "command": "python3",
+          "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/pretool_gate.py"], "timeout": 5 } ] },
+      { "matcher": "Bash",
+        "hooks": [ { "type": "command", "command": "python3",
+          "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/pretool_gate.py"], "timeout": 5 } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Bash|Edit|Write|MultiEdit|Task|WebFetch|WebSearch",
+        "hooks": [ { "type": "command", "command": "python3",
+          "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/observer.py"], "async": true } ] }
+    ],
+    "PostToolUseFailure": [
+      { "matcher": "Bash|Edit|Write|MultiEdit|Task",
+        "hooks": [
+          { "type": "command", "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/failure_gate.py"], "timeout": 5 },
+          { "type": "command", "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/observer.py"], "async": true }
+        ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "python3",
+          "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/stop_gate.py"], "timeout": 10 } ] }
+    ],
+    "PreCompact": [
+      { "matcher": "auto|manual",
+        "hooks": [ { "type": "command", "command": "python3",
+          "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/precompact_salvage.py"], "async": true } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "python3",
+          "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session_end.py"], "timeout": 2 } ] }
+    ]
+  }
+}
