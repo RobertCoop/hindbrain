@@ -687,7 +687,12 @@ def build_parser():
 def main(argv):
     args = build_parser().parse_args(argv)
     if getattr(args, "db", None):
-        os.environ["HINDBRAIN_DB"] = os.path.abspath(args.db)
+        dbp = os.path.abspath(args.db)
+        try:
+            os.makedirs(os.path.dirname(dbp), mode=0o700, exist_ok=True)
+        except OSError:
+            pass
+        os.environ["HINDBRAIN_DB"] = dbp
     session = (getattr(args, "session", None)
                or os.environ.get("HINDBRAIN_SESSION") or "unbound")
     try:
