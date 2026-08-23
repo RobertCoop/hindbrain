@@ -1,7 +1,6 @@
 import json
 import os
 import time
-import traceback
 
 from lib import paths
 
@@ -12,6 +11,7 @@ def _log_path(name):
 
 def err(exc: BaseException, hook_name: str) -> None:
     try:
+        import traceback  # lazy: only the error path pays for it
         stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         tb = "".join(traceback.format_exception(exc))
         with open(_log_path("errors.log"), "a", encoding="utf-8") as f:

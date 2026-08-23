@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook (spec 8.4 + AM-1): turn bookkeeping, witness journal,
 P0/correction detectors, FTS retrieval through the tier gate."""
-import hashlib
 import json
 import os
 import re
@@ -56,6 +55,7 @@ def _p0_sentence(prompt):
 
 
 def _hash_words(words):
+    import hashlib  # lazy: only redact_journal mode pays for _hashlib
     return [hashlib.sha256(w.encode("utf-8")).hexdigest() for w in sorted(words)]
 
 

@@ -123,6 +123,8 @@ def seed(data_dir, project):
         "INSERT INTO access_log (memory_id,session_id,agent_id,ts,event,weight,query) "
         "VALUES (?,?,?,?,?,?,?)", acc)
     conn.commit()
+    # merge the trigger-built FTS segments into steady-state shape
+    conn.execute("INSERT INTO memory_fts(memory_fts) VALUES('optimize')")
     conn.execute("ANALYZE")
     conn.commit()
     conn.close()

@@ -4,6 +4,7 @@ tier before injection. Never emits permissionDecision "allow"."""
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 
@@ -14,6 +15,34 @@ NAME = "pretool_gate"
 SUMMARY = {}
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
+
+def _exact_scoped(conn, scope_type, project, ctx):
+    # scope_values repeat across many rows; match each distinct value once,
+    # then fetch only the rows that hit — avoids converting ~1k rows per call
+    probe = {"scope_type": scope_type, "project": ""}
+    try:
+        svs = [r[0] for r in conn.execute(
+            "SELECT DISTINCT scope_value FROM memory WHERE scope_type = ? "
+            "AND status = 'active' AND project IN (?, '')",
+            (scope_type, project))]
+        matched = [sv for sv in svs if sv and scopes.match(
+            {**probe, "scope_value": sv}, ctx) == "exact"]
+        if not matched:
+            return []
+        rows = conn.execute(
+            "SELECT * FROM memory WHERE scope_type = ? AND status = 'active' "
+            "AND project IN (?, '') AND scope_value IN "
+            f"({','.join('?' * len(matched))})",
+            (scope_type, project, *matched)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["bm25"] = 0.0
+        out.append(d)
+    return out
 
 
 def _is_consequential(cmd, subs, cfg):
@@ -96,8 +125,7 @@ def _edit_branch(conn, cfg, st, session, agent, cwd, project, tool, ti, now):
     content = str(content)[:cfg["budgets"]["edit_scan_bytes"]]
     ctx = scoring.Ctx(session=session, agent=agent, cwd=cwd, project=project,
                       command_adjacent=False, file_path=fp, tool_name=tool)
-    hits = [m for m in db.by_scope(conn, "path", project)
-            if scopes.match(m, ctx) == "exact"]
+    hits = _exact_scoped(conn, "path", project, ctx)
     q = querybuild.fts_query(os.path.basename(fp) + " " + content)
     if q:
         hits = hits + db.search(conn, q, project, k=12)
@@ -113,8 +141,7 @@ def _bash_branch(conn, cfg, st, session, agent, cwd, project, ti, now):
     heads = {signatures.head_str(s) for s in subs}
     ctx = scoring.Ctx(session=session, agent=agent, cwd=cwd, project=project,
                       command_adjacent=True, command=cmd, tool_name="Bash")
-    scoped = [m for m in db.by_scope(conn, "command", project)
-              if scopes.match(m, ctx) == "exact"]
+    scoped = _exact_scoped(conn, "command", project, ctx)
     consequential = _is_consequential(cmd, subs, cfg)
     denied_map = st.get("denied") or {}
     deny_w = cfg["scoring"]["deny_weight"]

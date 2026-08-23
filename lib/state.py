@@ -2,7 +2,6 @@ import copy
 import json
 import os
 import re
-import tempfile
 import time
 
 try:
@@ -50,11 +49,11 @@ def load(session: str, agent: str = "main") -> dict:
 
 
 def save(session: str, agent: str, st: dict) -> None:
+    # pid-unique temp + os.replace keeps atomicity without importing tempfile
     path = state_path(session, agent)
-    d = os.path.dirname(path)
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=".state-")
+    tmp = f"{path}.tmp.{os.getpid()}"
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(st, f)
         os.replace(tmp, path)
     except OSError:

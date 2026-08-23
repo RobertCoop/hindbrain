@@ -2,21 +2,23 @@
 so unaccessed memories can still surface (finding A3)."""
 import math
 import time
-from dataclasses import dataclass
 
 from lib import db, scopes
 
 
-@dataclass
 class Ctx:
-    session: str = ""
-    agent: str = "main"
-    cwd: str = ""
-    project: str = ""
-    command_adjacent: bool = False
-    file_path: str = ""
-    command: str = ""
-    tool_name: str = ""
+    # plain class, not @dataclass: dataclasses drags in inspect/copy (~8 ms of
+    # the hot-path import budget); constructor signature is contract-identical
+    def __init__(self, session="", agent="main", cwd="", project="",
+                 command_adjacent=False, file_path="", command="", tool_name=""):
+        self.session = session
+        self.agent = agent
+        self.cwd = cwd
+        self.project = project
+        self.command_adjacent = command_adjacent
+        self.file_path = file_path
+        self.command = command
+        self.tool_name = tool_name
 
 
 def activation(events, now, cfg):
