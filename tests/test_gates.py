@@ -126,6 +126,53 @@ def test_session_start_startup(tmp_data, conn, tmp_path):
     assert "additionalContext" in out["hookSpecificOutput"]
 
 
+def _proj_with_git(tmp_path):
+    p = tmp_path / "proj"
+    (p / ".git").mkdir(parents=True)
+    return str(p)
+
+
+def test_carryover_skips_live_owner_session(tmp_data, conn, tmp_path):
+    # carryover must not claim an open candidate whose owning session is
+    # still live (its own Stop gate owns it)
+    from lib import state as statemod
+    proj = _proj_with_git(tmp_path)
+    cand = seed_candidate(
+        conn, "s-owner-live", ts=int(time.time()) - 3600,
+        payload=json.dumps({"text": "deploys happen on Fridays",
+                            "project": proj}))
+    statemod.reset("s-owner-live", "main")  # state file with ended=false
+    evt = {"session_id": "s-carry1", "source": "startup", "cwd": proj,
+           "hook_event_name": "SessionStart"}
+    proc = run_hook("session_start.py", evt, hook_env(tmp_data))
+    out = hook_output(proc, "SessionStart")
+    assert conn.execute("SELECT status FROM candidate WHERE id=?",
+                        (cand,)).fetchone()[0] == "open"
+    if out is not None:
+        assert "Carried-over" not in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_carryover_claims_ended_owner_session(tmp_data, conn, tmp_path):
+    from lib import state as statemod
+    proj = _proj_with_git(tmp_path)
+    cand = seed_candidate(
+        conn, "s-owner-done", ts=int(time.time()) - 3600,
+        payload=json.dumps({"text": "deploys happen on Fridays",
+                            "project": proj}))
+    st = statemod.reset("s-owner-done", "main")
+    st["ended"] = True
+    statemod.save("s-owner-done", "main", st)
+    evt = {"session_id": "s-carry2", "source": "startup", "cwd": proj,
+           "hook_event_name": "SessionStart"}
+    proc = run_hook("session_start.py", evt, hook_env(tmp_data))
+    out = hook_output(proc, "SessionStart")
+    assert conn.execute("SELECT status FROM candidate WHERE id=?",
+                        (cand,)).fetchone()[0] == "carried"
+    assert out is not None
+    text = out["hookSpecificOutput"]["additionalContext"]
+    assert "Carried-over" in text and "deploys happen on Fridays" in text
+
+
 def test_prompt_gate_capability_on_remember(tmp_data, conn, tmp_path):
     evt = {"session_id": "s-p0", "cwd": str(tmp_path),
            "prompt": "Remember that we deploy only on Fridays",
@@ -189,6 +236,22 @@ def test_pretool_gate_subagent_own_state(tmp_data, conn, tmp_path):
     assert mid in st["injected"] + st["reminded"]
     assert not os.path.exists(
         os.path.join(str(tmp_data), "sessions", "s-sub__main.json"))
+
+
+def test_edit_branch_excludes_quarantined(tmp_data, conn, tmp_path):
+    # §5 capability table: quarantined memories never appear in pretool output
+    low_tau_config(tmp_data)
+    mid = seed_memory(conn, "editing settings.py here breaks the import cycle",
+                      authority="quarantined", scope_type="path",
+                      scope_value="*.py")
+    evt = {"session_id": "s-qedit", "cwd": str(tmp_path), "tool_name": "Edit",
+           "tool_input": {"file_path": str(tmp_path / "settings.py"),
+                          "new_string": "editing settings breaks the import cycle"},
+           "hook_event_name": "PreToolUse"}
+    proc = run_hook("pretool_gate.py", evt, hook_env(tmp_data))
+    out = hook_output(proc, "PreToolUse")
+    if out is not None:
+        assert mid not in out["hookSpecificOutput"].get("additionalContext", "")
 
 
 def test_observer_bash_ok(tmp_data, conn, tmp_path):
@@ -259,6 +322,20 @@ def test_stop_gate_nudge(tmp_data, conn, tmp_path):
     text = out["hookSpecificOutput"]["additionalContext"]
     assert "mem save" in text and "unsaved observation" in text
     row = conn.execute("SELECT data FROM journal WHERE session_id='s-stop' "
+                       "AND event='nudge'").fetchone()
+    assert cand in json.loads(row["data"])["shown"]
+
+
+def test_stop_gate_surfaces_subagent_candidate(tmp_data, conn, tmp_path):
+    # §12.1: subagent-authored candidates surface at the main-thread Stop
+    cand = seed_candidate(conn, "s-substop", agent_id="agent-9")
+    evt = {"session_id": "s-substop", "cwd": str(tmp_path),
+           "hook_event_name": "Stop"}
+    proc = run_hook("stop_gate.py", evt, hook_env(tmp_data))
+    out = hook_output(proc, "Stop")
+    assert out is not None
+    assert "mem save" in out["hookSpecificOutput"]["additionalContext"]
+    row = conn.execute("SELECT data FROM journal WHERE session_id='s-substop' "
                        "AND event='nudge'").fetchone()
     assert cand in json.loads(row["data"])["shown"]
 
@@ -338,16 +415,16 @@ def test_data_dir_uncreatable(script, tmp_path):
     assert proc.stdout.decode().strip() == ""
 
 
-# ---- locked DB ----
+# ---- locked DB: every hook script exits 0 (§13.3) ----
 
-def test_locked_db(tmp_data, conn, tmp_path):
+@pytest.mark.parametrize("script", HOOK_SCRIPTS)
+def test_locked_db(script, tmp_data, conn, tmp_path):
     locker = sqlite3.connect(os.path.join(str(tmp_data), "hindbrain.db"))
     locker.execute("BEGIN IMMEDIATE")
     try:
-        evt = {"session_id": "s-lock", "cwd": str(tmp_path),
-               "prompt": "does the gate survive a locked database",
-               "hook_event_name": "UserPromptSubmit"}
-        proc = run_hook("prompt_gate.py", evt, hook_env(tmp_data))
+        evt = dict(GENERIC_EVT, session_id="s-lock", cwd=str(tmp_path),
+                   prompt="does the gate survive a locked database")
+        proc = run_hook(script, evt, hook_env(tmp_data))
         assert proc.returncode == 0, proc.stderr.decode()
     finally:
         locker.rollback()
@@ -406,6 +483,39 @@ def test_deny_then_ask_on_identical_retry(tmp_data, conn, tmp_path):
     events = [r["event"] for r in conn.execute(
         "SELECT event FROM access_log WHERE memory_id=?", (mid,))]
     assert events.count("denied") == 2
+
+
+def test_escalation_deny_then_ask_on_rerun(tmp_data, conn, tmp_path):
+    # reminded-but-unfetched escalation (§8.5): a non-hazard full-authority
+    # memory denies once, and the persisted state turns an identical rerun
+    # into permissionDecision "ask"
+    from lib import state as statemod
+    body = ("kubectl delete on this cluster cascades into the shared "
+            "namespace; double-check the context first")
+    mid = seed_memory(conn, body, scope_type="command",
+                      scope_value="kubectl.delete", hazard=0, authority="full")
+    st = statemod.load("s-esc", "main")
+    st["reminded"].append(mid)  # reminded earlier this session, never fetched
+    statemod.save("s-esc", "main", st)
+    evt = {"session_id": "s-esc", "cwd": str(tmp_path), "tool_name": "Bash",
+           "tool_input": {"command": "kubectl delete pod web-1"},
+           "hook_event_name": "PreToolUse"}
+    env = hook_env(tmp_data)
+
+    proc = run_hook("pretool_gate.py", evt, env)
+    out = hook_output(proc, "PreToolUse")
+    hso = out["hookSpecificOutput"]
+    assert hso["permissionDecision"] == "deny"
+    assert mid in hso["permissionDecisionReason"]
+
+    with open(os.path.join(str(tmp_data), "sessions", "s-esc__main.json")) as f:
+        assert "Bash:kubectl.delete" in json.load(f)["denied"][mid]
+
+    proc2 = run_hook("pretool_gate.py", evt, env)
+    out2 = hook_output(proc2, "PreToolUse")
+    hso2 = out2["hookSpecificOutput"]
+    assert hso2["permissionDecision"] == "ask"
+    assert mid in hso2["permissionDecisionReason"]
 
 
 def test_deny_needs_full_authority(tmp_data, conn, tmp_path):

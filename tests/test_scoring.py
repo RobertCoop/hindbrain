@@ -221,6 +221,19 @@ def test_gate_duplicate_ids_collapse(conn):
     assert [h["id"] for h in inject] == ["m1"]
 
 
+def test_gate_union_dedup_keeps_best_bm25(conn):
+    # regression: the scoped+fts union repeats an id; the scope-only copy
+    # (bm25 0.0) must not shadow the FTS copy's real relevance
+    cfg = _cfg()
+    scoped = _mem("m1", scope_type="command", scope_value="pytest", bm25=0.0)
+    fts = _mem("m1", scope_type="command", scope_value="pytest", bm25=-1000.0)
+    ctx = _ctx(command_adjacent=True, command="pytest -x")
+    inject, remind = scoring.gate([scoped, fts], _state(), ctx, cfg, conn,
+                                  (0.50, 0.25), now=NOW)
+    assert [h["id"] for h in inject] == ["m1"]  # scope-only copy alone would miss tau_hi
+    assert inject[0]["bm25"] == -1000.0
+
+
 def test_gate_inject_item_budget(conn):
     cfg = _cfg()
     hits = [_mem(f"m{i}", authority="full") for i in range(6)]

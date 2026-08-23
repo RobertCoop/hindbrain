@@ -317,6 +317,22 @@ def test_body_length_limits(tmp_data, conn, proj):
     assert mem_count(conn) == 2
 
 
+def test_usage_error_exits_1_refusal_exits_2(tmp_data, conn, proj):
+    # §9.1: exit 2 is reserved for refusals; usage errors are user errors
+    s = "sess-exitcodes"
+    r = mem_cmd(["frobnicate"], tmp_data, s, proj)
+    assert r.returncode == 1
+    assert "error" in r.stderr.lower()
+
+    r = mem_cmd([], tmp_data, s, proj)
+    assert r.returncode == 1
+
+    r = mem_cmd(["save", "--kind", "fact", "--scope", "project",
+                 "ci uses ghp_ABCDEFGHIJabcdefghij0123456789KLMNOP for releases"],
+                tmp_data, s, proj)
+    assert r.returncode == 2 and "refused" in r.stderr
+
+
 def test_unique_prefix_id_lookup(tmp_data, conn, proj):
     s = "sess-prefix"
     body = "the release job signs artifacts on the runner before uploading them anywhere"

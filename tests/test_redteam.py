@@ -404,3 +404,52 @@ def test_rt8_confirm_without_user_witness_not_full(tmp_data, conn, proj):
     assert r.returncode == 0, r.stderr
     assert "authority=full" in r.stdout
     assert db_row(conn, mid)["authority"] == "full"
+
+
+# ---- F4 (AM-5/5.3): hashed journal mode must witness cue-word confirmations ----
+
+def test_confirm_witnessed_in_redact_journal_mode(tmp_data, conn, proj):
+    import hashlib
+    s = "rt8h-sess"
+    os.makedirs(tmp_data, mode=0o700, exist_ok=True)
+    with open(os.path.join(tmp_data, "config.toml"), "w", encoding="utf-8") as f:
+        f.write(CFG_OVERRIDE + "[security]\nredact_journal = true\n")
+
+    body = ("integration tests hit the staging database and run serially in "
+            "this repository; provision the ephemeral runner, reload the "
+            "seeded fixtures, export the vpn tunnel credentials")
+    title = "staging integration test serial policy note"
+    r = mem_cmd(["save", "--kind", "fact", "--scope", "project",
+                 "--title", title, body], tmp_data, s, proj)
+    mid = saved_id(r.stdout)
+    assert db_row(conn, mid)["authority"] == "pending"
+
+    # title reference WITHOUT a cue word: confirm must still downgrade
+    r = run_hook("prompt_gate.py",
+                 {"session_id": s, "cwd": proj,
+                  "prompt": "the staging integration test serial policy note"},
+                 tmp_data)
+    assert r.returncode == 0, r.stderr
+    r = mem_cmd(["confirm", mid], tmp_data, s, proj)
+    assert r.returncode == 0, r.stderr
+    assert "downgraded to corroborate" in r.stdout
+    assert db_row(conn, mid)["authority"] != "full"
+
+    # 'yes <title>' journaled through prompt_gate in redact mode -> full,
+    # exactly as it would be with raw journaling ('yes' is a stopword and
+    # must survive hashing as an AM-5 cue)
+    r = run_hook("prompt_gate.py",
+                 {"session_id": s, "cwd": proj,
+                  "prompt": "yes the staging integration test serial policy note"},
+                 tmp_data)
+    assert r.returncode == 0, r.stderr
+    rows = conn.execute(
+        "SELECT data FROM journal WHERE session_id=? AND event='user_prompt' "
+        "ORDER BY ts DESC, rowid DESC LIMIT 1", (s,)).fetchall()
+    d = json.loads(rows[0][0])
+    assert "text" not in d and isinstance(d.get("hash_words"), list)
+    assert hashlib.sha256(b"yes").hexdigest() in d["hash_words"]
+    r = mem_cmd(["confirm", mid], tmp_data, s, proj)
+    assert r.returncode == 0, r.stderr
+    assert "authority=full" in r.stdout
+    assert db_row(conn, mid)["authority"] == "full"
