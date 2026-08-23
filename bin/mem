@@ -244,6 +244,10 @@ def cmd_save(args, conn, cfg, session, project):
     if cand:
         prior = {"P0": cfg["scoring"]["prior_p0"], "P1": cfg["scoring"]["prior_p1"],
                  "P2": cfg["scoring"]["prior_p2"]}.get(cand["priority"], prior)
+    if args.prior is not None:
+        # explicit cold-start strength (bootstrap seeding); activation only —
+        # authority is witness-derived and cannot be raised from here
+        prior = min(3.0, max(0.5, args.prior))
 
     mid = insert_memory(
         conn, cfg, session, title=title, body=body, kind=args.kind,
@@ -633,6 +637,8 @@ def build_parser():
     sp.add_argument("--hazard-mode", choices=("deny", "ask"))
     sp.add_argument("--channel", choices=("external", "user"))
     sp.add_argument("--from-candidate", metavar="N")
+    sp.add_argument("--prior", type=float, default=None,
+                    help="cold-start strength 0.5..3.0 (activation only)")
     sp.add_argument("body")
     sp.set_defaults(func=cmd_save)
 

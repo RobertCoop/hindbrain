@@ -138,7 +138,7 @@ Runs inside the agent's Bash tool (or your terminal). DB resolution: `--db` → 
 
 ```
 mem save   --kind K --scope TYPE:VALUE [--tags a,b] [--hazard [--hazard-mode deny|ask]]
-           [--channel external] [--from-candidate N] "BODY"
+           [--channel external] [--from-candidate N] [--prior 0.5..3.0] "BODY"
 mem get ID            # full record; logs a 'fetched' access (escalation toward inject)
 mem search "TERMS" [--all-projects] [-k 8]
 mem list [--kind K] [--project] [--pinned]
@@ -153,7 +153,11 @@ mem audit ID          # lineage: source, supersession chain, corroborations, acc
 mem stats             # counts by kind/authority/status; acceptance metrics
 ```
 
-Authority is granted from **hook-witnessed evidence**, never from agent flags: a claim matching a logged user turn gets `full`-track treatment, observer-witnessed fixes get `standard`, plain agent notes start `pending`, and web/tool-derived content is `quarantined` until corroborated across sessions.
+Authority is granted from **hook-witnessed evidence**, never from agent flags: a claim matching a logged user turn gets `full`-track treatment, observer-witnessed fixes get `standard`, plain agent notes start `pending`, and web/tool-derived content is `quarantined` until corroborated across sessions. `--prior` sets only cold-start activation strength, never authority.
+
+### First-run bootstrap: `/hindbrain:mem-init`
+
+Starting hindbrain against an existing project? Run `/hindbrain:mem-init` (optionally with a focus hint, e.g. `/hindbrain:mem-init the deploy pipeline`). It walks the agent through the **mem-init** skill: survey CI/task-runner truth, confession comments, git history, decision records, and doc caveats; filter through the durable/non-obvious/actionable/scoped bar; verify claims before saving; and seed 10–30 well-scoped memories with deliberate kind, scope, and `--prior` strength. It ends with a `mem confirm` shortlist for you — user confirmation is what grants `full` authority and arms the deny tier for any seeded hazards.
 
 ## Consolidator
 

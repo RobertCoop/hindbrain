@@ -362,3 +362,41 @@ def test_unique_prefix_id_lookup(tmp_data, conn, proj):
     assert "not found" in r.stderr or "ambiguous" in r.stderr
     r = mem_cmd(["get", "PREFIXAMBIG000000000000A"], tmp_data, s, proj)
     assert r.returncode == 0 and "PREFIXAMBIG000000000000AAA" in r.stdout
+
+
+def test_save_prior_flag(tmp_data, conn, proj):
+    # --prior sets cold-start activation strength (clamped) but never authority
+    s = "sess-prior"
+    r = mem_cmd(["save", "--kind", "gotcha", "--scope", "command:make",
+                 "--prior", "3.0",
+                 "make deploy here needs VAULT_ADDR exported first"],
+                str(tmp_data), s, proj)
+    assert r.returncode == 0
+    mid = saved_id(r.stdout)
+    row = conn.execute("SELECT prior, authority FROM memory WHERE id=?",
+                       (mid,)).fetchone()
+    assert row["prior"] == 3.0
+    assert row["authority"] == "pending"  # strength never raises authority
+    syn = conn.execute(
+        "SELECT weight FROM access_log WHERE memory_id=? AND event='synthetic'",
+        (mid,)).fetchone()
+    assert syn["weight"] == 3.0
+
+    # clamped to [0.5, 3.0]
+    r = mem_cmd(["save", "--kind", "fact", "--scope", "project",
+                 "--prior", "99",
+                 "the staging cluster lives in the eu-west-1 region"],
+                str(tmp_data), s, proj)
+    assert r.returncode == 0
+    row = conn.execute("SELECT prior FROM memory WHERE id=?",
+                       (saved_id(r.stdout),)).fetchone()
+    assert row["prior"] == 3.0
+
+    # default unchanged without the flag
+    r = mem_cmd(["save", "--kind", "fact", "--scope", "project",
+                 "integration tests hit a live localstack container"],
+                str(tmp_data), s, proj)
+    assert r.returncode == 0
+    row = conn.execute("SELECT prior FROM memory WHERE id=?",
+                       (saved_id(r.stdout),)).fetchone()
+    assert row["prior"] == 1.0
