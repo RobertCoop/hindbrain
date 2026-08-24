@@ -109,7 +109,7 @@ def turn_tainted(conn, session):
     return False
 
 
-def decide_channel(body, session, conn, cfg, channel_flag, cand):
+def decide_channel(body, session, conn, cfg, channel_flag, cand, project=None):
     if channel_flag == "external":
         return "external", "declared --channel external"
     notes = []
@@ -118,7 +118,7 @@ def decide_channel(body, session, conn, cfg, channel_flag, cand):
     if cand is not None and witness.observer_witnessed(cand):
         notes.append("observer-recorded candidate evidence")
         return "observer_witnessed", "; ".join(notes)
-    if witness.user_witnessed(body, session, conn, cfg):
+    if witness.user_witnessed(body, session, conn, cfg, project=project):
         notes.append("matches a logged user turn")
         return "user_witnessed", "; ".join(notes)
     notes.append("agent-authored, no witness")
@@ -232,7 +232,8 @@ def cmd_save(args, conn, cfg, session, project):
         if best_j >= 0.55 and conflict:
             contradiction = (best["id"], best_j)
 
-    channel, why = decide_channel(body, session, conn, cfg, args.channel, cand)
+    channel, why = decide_channel(body, session, conn, cfg, args.channel, cand,
+                                  project=project)
     authority = AUTH_BY_CHANNEL[channel]
     if turn_tainted(conn, session):
         cap = "quarantined" if channel == "external" else "pending"
@@ -430,7 +431,7 @@ def cmd_confirm(args, conn, cfg, session, project):
         m = resolve_mem(conn, args.id)
     except LookupError as e:
         return fail(str(e))
-    if witness.confirm_witnessed(m, session, conn, cfg):
+    if witness.confirm_witnessed(m, session, conn, cfg, project=project):
         conn.execute("UPDATE memory SET authority='full' WHERE id=?", (m["id"],))
         conn.commit()
         db.log_access(conn, m["id"], session, "main", "cited")
@@ -443,10 +444,19 @@ def cmd_confirm(args, conn, cfg, session, project):
     m, note = apply_corroborate(conn, cfg, session, m["id"])
     log.metric({"hook": "mem", "cmd": "confirm_downgraded", "id": m["id"],
                 "session": session})
+    st, fb = witness.confirm_witness_stats(conn, session, project)
     lines = [f"no user confirmation found in the last 5 user turns — "
              f"downgraded to corroborate [{m['id']}] "
              f"(count={m['corroborations']}, authority={m['authority']})",
-             "full authority requires the user to confirm this note in their own words"]
+             f"searched session {session}: {st} user turn(s) on record"
+             + (f"; plus {fb} recent same-project turn(s) via fallback" if fb else "")]
+    if st == 0 and fb == 0:
+        lines.append("no user turns journaled for this session — hooks may be "
+                     "journaling under a different session id (resume/fork), or "
+                     "the message was a !-command (those never journal)")
+    lines.append("full authority requires a chat message from the user naming "
+                 "this note (its id or full title) with a cue word "
+                 "(yes/confirm/correct/trust/keep), within their last 5 turns")
     if note:
         lines.append(note)
     emit(lines)
@@ -474,7 +484,8 @@ def cmd_supersede(args, conn, cfg, session, project):
         scope_type, scope_value = old["scope_type"], old["scope_value"]
     title = (args.title or body[:80]).strip()[:80]
 
-    channel, why = decide_channel(body, session, conn, cfg, None, None)
+    channel, why = decide_channel(body, session, conn, cfg, None, None,
+                                  project=project)
     authority = AUTH_BY_CHANNEL[channel]
     if turn_tainted(conn, session):
         if AUTH_RANK[authority] > AUTH_RANK["pending"]:

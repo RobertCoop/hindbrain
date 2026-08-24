@@ -400,3 +400,48 @@ def test_save_prior_flag(tmp_data, conn, proj):
     row = conn.execute("SELECT prior FROM memory WHERE id=?",
                        (saved_id(r.stdout),)).fetchone()
     assert row["prior"] == 1.0
+
+
+def test_confirm_cross_session_fallback(tmp_data, conn, proj):
+    # hooks journaled the user's turn under a different session id (resume/
+    # fork/env drift): confirm still witnesses via same-project recent turns
+    import time as _t
+    from lib import ids as _ids
+    mid = _ids.ulid()
+    conn.execute(
+        "INSERT INTO memory(id, title, body, kind, scope_type, project, "
+        "authority, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (mid, "deploy needs vault", "deploys here need VAULT_ADDR exported "
+         "before make deploy", "gotcha", "project", proj, "pending",
+         int(_t.time())))
+    conn.execute(
+        "INSERT INTO journal(session_id, agent_id, ts, event, data) "
+        "VALUES (?,?,?,?,?)",
+        ("hook-session-abc", "main", int(_t.time()),
+         "user_prompt", json.dumps({"text": f"yes, confirm {mid}",
+                                    "project": proj})))
+    conn.commit()
+
+    r = mem_cmd(["confirm", mid], str(tmp_data), "cli-session-xyz", proj)
+    assert r.returncode == 0 and "authority=full" in r.stdout
+
+    # a stale (>15 min) cross-session turn does NOT witness
+    mid2 = _ids.ulid()
+    conn.execute(
+        "INSERT INTO memory(id, title, body, kind, scope_type, project, "
+        "authority, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (mid2, "stale note", "another note body long enough to save here",
+         "fact", "project", proj, "pending", int(_t.time())))
+    conn.execute(
+        "INSERT INTO journal(session_id, agent_id, ts, event, data) "
+        "VALUES (?,?,?,?,?)",
+        ("hook-session-abc", "main", int(_t.time()) - 3600,
+         "user_prompt", json.dumps({"text": f"yes, confirm {mid2}",
+                                    "project": proj})))
+    conn.commit()
+    r = mem_cmd(["confirm", mid2], str(tmp_data), "cli-session-other", proj)
+    assert r.returncode == 0 and "downgraded to corroborate" in r.stdout
+    # refusal message is diagnostic: names the searched session and the
+    # fallback turns it did consider (part 1's recent turn is still in window)
+    assert "searched session cli-session-other" in r.stdout
+    assert "recent same-project turn" in r.stdout
