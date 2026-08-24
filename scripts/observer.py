@@ -157,11 +157,18 @@ def _handle_failure(conn, evt, cfg, session, agent):
     ti = ti if isinstance(ti, dict) else {}
     cmd = str(ti.get("command") or "")
     subs = signatures.subcommands(cmd)
+    sig = signatures.failure_signature(tool, ti, ft)
+    # failure attribution: a bare nonzero exit with no error text (e.g. a
+    # trailing `[ -d x ] && ...` test in a compound that otherwise worked)
+    # is not evidence of a real failure and must not seed learned_fix pairs
+    attributable = not (sig.rsplit(":", 1)[-1] in ("unknown", "exit_code")
+                        and len(ft.strip()) < 40)
     db.journal(conn, session, agent, "tool_fail", {
         "tool": tool,
-        "sig": signatures.failure_signature(tool, ti, ft),
+        "sig": sig,
         "cmd_head": signatures.head_str(subs[0]) if subs else "",
         "cmd": cmd[:500],
+        "attributable": attributable,
         "ts": int(time.time())})
     _record_struggle(session, agent, cfg, "fail")
 
@@ -186,11 +193,21 @@ def _learned_fix(conn, cfg, session, agent, project, ti, cmd, summary):
         except (ValueError, TypeError):
             continue
         fsig = d.get("sig") or ""
-        # Task/Edit failures never seed learned_fix (AM-7): Bash sigs only
+        # Task/Edit failures never seed learned_fix (AM-7): Bash sigs only;
+        # unattributable failures (no error evidence) never pair
+        if d.get("attributable") is False:
+            continue
         if fsig.startswith("Bash:") and signatures.similar(fsig, ok_sig):
             fail = d
             break
     if not fail or not fail.get("cmd") or fail["cmd"] == cmd:
+        return
+    # a same-head match is not a fix pair: the commands must actually be
+    # variants of each other (strip VAR= prefixes, compare token overlap)
+    strip_env = lambda c: re.sub(r"^(\s*\w+=\S+\s+)+", "", c)
+    ftoks = set(strip_env(fail["cmd"]).split())
+    otoks = set(strip_env(cmd).split())
+    if not ftoks or not otoks or len(ftoks & otoks) / len(ftoks | otoks) < 0.5:
         return
     # one learned_fix per command head per session
     try:
@@ -270,7 +287,11 @@ def main(evt):
             "tool": "Bash",
             "cmd_head": signatures.head_str(subs[0]) if subs else ""})
         _record_struggle(session, agent, cfg, "ok")
-        _learned_fix(conn, cfg, session, agent, project, ti, cmd, summary)
+        # a "success" whose output still reads as an error is no fix
+        resp_head = str(evt.get("tool_response") or "")[:500]
+        if not re.search(r"(?i)\b(error|traceback|fatal|exception)\b|"
+                         r"\b[1-9]\d* failed\b", resp_head):
+            _learned_fix(conn, cfg, session, agent, project, ti, cmd, summary)
         return None, summary
 
     if tool in EDIT_TOOLS:

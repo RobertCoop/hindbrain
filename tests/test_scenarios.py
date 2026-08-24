@@ -359,3 +359,76 @@ def test_s1_replay_fail_fix_nudge_save_and_surface(tmp_data, conn, proj):
     events = [r["event"] for r in conn.execute(
         "SELECT event FROM access_log WHERE memory_id=?", (mid,))]
     assert "injected" in events
+
+
+def test_learned_fix_rejects_unrelated_same_head(tmp_data, conn, tmp_path):
+    # live FP (a): compound command's incidental exit-1 paired with an
+    # unrelated later command sharing only the head
+    fail_evt = {"session_id": "s-fp", "cwd": str(tmp_path), "tool_name": "Bash",
+                "hook_event_name": "PostToolUseFailure",
+                "tool_input": {"command":
+                               'for d in a b; do ls "$d"; done && [ -d .git ]'},
+                "tool_response": ""}
+    run_hook("observer.py", fail_evt, hook_env(tmp_data))
+    ok_evt = {"session_id": "s-fp", "cwd": str(tmp_path), "tool_name": "Bash",
+              "hook_event_name": "PostToolUse",
+              "tool_input": {"command": "ls -la"}, "tool_response": "total 8"}
+    run_hook("observer.py", ok_evt, hook_env(tmp_data))
+    n = conn.execute("SELECT COUNT(*) FROM candidate WHERE session_id='s-fp' "
+                     "AND signal='learned_fix'").fetchone()[0]
+    assert n == 0  # bare exit with no error text is unattributable; and
+    # 'ls -la' shares only the head with the compound anyway
+
+
+def test_learned_fix_rejects_error_shaped_success(tmp_data, conn, tmp_path):
+    # live FP (b): the "working" command's own output still reads as a failure
+    fail_evt = {"session_id": "s-fp2", "cwd": str(tmp_path), "tool_name": "Bash",
+                "hook_event_name": "PostToolUseFailure",
+                "tool_input": {"command": "pytest -x"},
+                "tool_response": "ImportError: No module named app"}
+    run_hook("observer.py", fail_evt, hook_env(tmp_data))
+    ok_evt = {"session_id": "s-fp2", "cwd": str(tmp_path), "tool_name": "Bash",
+              "hook_event_name": "PostToolUse",
+              "tool_input": {"command": "PYTHONPATH=src pytest -x"},
+              "tool_response": "3 failed, 1 error in 0.4s"}
+    run_hook("observer.py", ok_evt, hook_env(tmp_data))
+    n = conn.execute("SELECT COUNT(*) FROM candidate WHERE session_id='s-fp2' "
+                     "AND signal='learned_fix'").fetchone()[0]
+    assert n == 0
+
+    # the genuine fix still pairs
+    ok2 = dict(ok_evt, tool_response="4 passed in 0.4s")
+    run_hook("observer.py", ok2, hook_env(tmp_data))
+    n = conn.execute("SELECT COUNT(*) FROM candidate WHERE session_id='s-fp2' "
+                     "AND signal='learned_fix'").fetchone()[0]
+    assert n == 1
+
+
+def test_synthetic_turns_excluded_from_witness(tmp_data, conn, tmp_path):
+    # harness wrappers journaled as user prompts must not crowd the witness
+    # window or count as the user's words
+    base = {"session_id": "s-syn", "cwd": str(tmp_path),
+            "hook_event_name": "UserPromptSubmit"}
+    run_hook("prompt_gate.py",
+             dict(base, prompt="remember that deploys here always need VAULT_ADDR exported"),
+             hook_env(tmp_data))
+    for i in range(6):
+        run_hook("prompt_gate.py",
+                 dict(base, prompt=f"<task-notification>background task {i} done"
+                                   "</task-notification>"),
+                 hook_env(tmp_data))
+    import sys as _sys
+    _sys.path.insert(0, REPO)
+    from lib import witness, paths
+    paths._reset_cache_for_tests()
+    import os as _os
+    _os.environ["HINDBRAIN_DATA"] = str(tmp_data)
+    cfg = paths.load_config()
+    assert witness.user_witnessed(
+        "deploys here always need VAULT_ADDR exported first", "s-syn", conn,
+        cfg, n_prompts=5)
+    rows = conn.execute("SELECT data FROM journal WHERE session_id='s-syn' "
+                        "AND event='user_prompt'").fetchall()
+    import json as _json
+    flags = [bool(_json.loads(r[0]).get("synthetic")) for r in rows]
+    assert flags.count(True) == 6 and flags.count(False) == 1
