@@ -210,6 +210,9 @@ def main(evt, cfg):
     conn = db.connect()
     db.ensure_schema(conn)
     _write_env_contract(session)
+    # handshake bridges the store location + session binding into env-less
+    # shells (the agent's Bash tool may not inherit CLAUDE_ENV_FILE vars)
+    paths.write_handshake(project, session)
     _reset_or_load(conn, session, source)
     carried = _carry_candidates(conn, session, project)
     text, shown_ids = _profile(conn, cfg, project, carried, now)

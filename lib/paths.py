@@ -10,13 +10,68 @@ def plugin_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+# The handshake bridges hook-only environment into env-less shells: hooks get
+# CLAUDE_PLUGIN_DATA from the harness, but the agent's Bash tool may inherit
+# none of it — without a bridge the CLI silently forks a parallel store at the
+# home fallback as session "unbound". session_start writes the handshake at a
+# FIXED home path (findable with zero env); the CLI reads it before falling
+# back. Keyed by project so concurrent projects don't collide.
+HANDSHAKE_DIR = os.path.expanduser("~/.claude/hindbrain/handshake")
+SESSION_FRESH_S = 12 * 3600
+
+
+def _handshake_path(project: str) -> str:
+    import hashlib
+    h = hashlib.sha256(os.path.abspath(project).encode("utf-8")).hexdigest()[:16]
+    return os.path.join(HANDSHAKE_DIR, f"{h}.json")
+
+
+def write_handshake(project: str, session_id: str) -> None:
+    import time
+    try:
+        os.makedirs(HANDSHAKE_DIR, mode=0o700, exist_ok=True)
+        p = _handshake_path(project)
+        tmp = p + f".tmp.{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"data_dir": data_dir(), "db": db_path(),
+                       "session_id": session_id,
+                       "project": os.path.abspath(project),
+                       "ts": int(time.time())}, f)
+        os.replace(tmp, p)
+    except (OSError, ValueError):
+        pass  # best-effort; CLI degrades to env/fallback resolution
+
+
+def read_handshake(project: str) -> dict | None:
+    try:
+        with open(_handshake_path(project), "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) and d.get("data_dir") else None
+    except (OSError, ValueError):
+        return None
+
+
+def handshake_session(project: str) -> str | None:
+    # session ids go stale in a way the store location doesn't: honor only
+    # a fresh handshake's binding
+    import time
+    hs = read_handshake(project)
+    if hs and isinstance(hs.get("ts"), int) and hs.get("session_id"):
+        if int(time.time()) - hs["ts"] <= SESSION_FRESH_S:
+            return str(hs["session_id"])
+    return None
+
+
 def data_dir() -> str:
     if _cache["data_dir"]:
         return _cache["data_dir"]
     d = (os.environ.get("HINDBRAIN_DATA")
-         or os.environ.get("CLAUDE_PLUGIN_DATA")
-         or os.path.expanduser("~/.claude/hindbrain"))
-    d = os.path.abspath(d)
+         or os.environ.get("CLAUDE_PLUGIN_DATA"))
+    if not d:
+        hs = read_handshake(gitroot(os.getcwd()))
+        if hs:
+            d = hs["data_dir"]
+    d = os.path.abspath(d or os.path.expanduser("~/.claude/hindbrain"))
     os.makedirs(d, mode=0o700, exist_ok=True)
     for sub in ("sessions", "drafts", "logs"):
         os.makedirs(os.path.join(d, sub), mode=0o700, exist_ok=True)
