@@ -13,7 +13,14 @@ An offline consolidator dedupes, promotes, expires, detects contradictions, and 
 
 ### Path 1 — plugin (preferred)
 
-Install through Claude Code's plugin/marketplace flow: add this repository as a marketplace source, then install the `hindbrain` plugin. The exact commands track the live plugin documentation (the flow changes; see the Substrate compatibility checklist, item V1). Once installed, hooks register from the plugin's `hooks/hooks.json` automatically and data lives under `${CLAUDE_PLUGIN_DATA}`.
+This repository hosts its own single-plugin marketplace (`.claude-plugin/marketplace.json` with `source: "./"`), so installation is two commands:
+
+```
+claude plugin marketplace add https://github.com/RobertCoop/hindbrain
+claude plugin install hindbrain@hindbrain
+```
+
+(Or interactively: `/plugin` → browse the `hindbrain` marketplace.) The exact flow tracks the live plugin documentation (see the Substrate compatibility checklist, item V1). Once installed, hooks register from the plugin's `hooks/hooks.json` automatically and data lives under `${CLAUDE_PLUGIN_DATA}`.
 
 ### Path 2 — settings.json fallback (no plugin infrastructure)
 
