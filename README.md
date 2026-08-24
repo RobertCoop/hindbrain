@@ -169,6 +169,10 @@ Starting hindbrain against an existing project? Run `/hindbrain:mem-init` (optio
 
 Three survey backends, picked automatically by capability: the **`mem-init-scan` plugin workflow** (`/hindbrain:mem-init-scan` — parallel read-only scouts, a judge pass, and a ranked proposal list, with the raw survey kept out of the main context; requires dynamic workflows to be enabled), the **`mem-scout` subagent** the plugin ships (one read-only scout per evidence source), or the fully inline path starting from **`mem scout --json`** — a deterministic, dependency-free survey of confession comments, task-runner/CI recipes, git churn, and environment shape. On every path the survey only *proposes*: saves happen in the main session, and seeded memories start at `pending` authority regardless of backend.
 
+### Multi-repo workspaces and project binding
+
+A memory's `project` is the **workspace**: the directory the session launched in, as recorded by the session handshake. That binding is sticky — `cd`-ing into a nested repo (a parent dir holding several repos is fully supported) does not fork the project identity; hooks and the CLI resolve any path inside the workspace back to it. Scope path globs workspace-relative (`repoA/src/**`). `mem scout` aggregates git mining across immediate child repos when the workspace root isn't itself a repo. To pin project identity manually (e.g. to treat one nested repo as its own project), set `HINDBRAIN_PROJECT=/path/to/root`; a workspace handshake goes stale after 7 days without a session, after which resolution falls back to the git root of the current directory.
+
 ## Consolidator
 
 `python3 consolidator/consolidate.py` runs the offline maintenance passes (GC, expiry, dedup, contradiction report, reconsolidation check, promotions, CLAUDE.md graduation proposals, metrics rollup). It is a flock singleton and is normally kicked automatically by SessionStart/SessionEnd when the last run is older than 24 h; running it by hand is always safe and idempotent. Reports land in `<data>/reports/`.

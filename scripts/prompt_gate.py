@@ -173,7 +173,7 @@ def main(evt, cfg):
     agent = "main"
     prompt = str(evt.get("prompt") or "")[:PROMPT_CAP]
     cwd = evt.get("cwd") or os.getcwd()
-    project = paths.gitroot(cwd)
+    project = paths.resolve_project(cwd)
     now = int(time.time())
 
     def bump(s):

@@ -123,3 +123,27 @@ def test_cli_scout_text_and_json(proj, tmp_data):
                        capture_output=True, text=True, cwd=proj, env=env,
                        timeout=60)
     assert r.returncode == 1
+
+
+def test_scout_multi_repo_workspace(tmp_path, tmp_data):
+    # workspace dir containing two repos: git mining aggregates both,
+    # labeled per repo
+    ws = tmp_path / "workspace"
+    genv = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    for name, msg in (("repoA", "fix auth again"), ("repoB", "revert bad deploy")):
+        r = ws / name
+        r.mkdir(parents=True)
+        (r / "f.py").write_text("x = 1\n")
+        for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "initial"]):
+            subprocess.run(["git", "-C", str(r)] + args, check=True, env=genv,
+                           capture_output=True)
+        for i in range(3):
+            (r / "f.py").write_text(f"x = {i + 2}\n")
+            subprocess.run(["git", "-C", str(r), "commit", "-aqm", f"{msg} {i}"],
+                           check=True, env=genv, capture_output=True)
+    g = scout.git_history(str(ws))
+    sus = " | ".join(g["suspicious_commits"])
+    assert "repoA: " in sus and "repoB: " in sus
+    churn = {c["file"] for c in g["churn_files"]}
+    assert "repoA/f.py" in churn and "repoB/f.py" in churn

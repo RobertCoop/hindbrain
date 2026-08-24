@@ -239,7 +239,7 @@ def main(evt):
     session = evt.get("session_id") or "unknown"
     agent = evt.get("agent_id") or "main"
     cwd = evt.get("cwd") or os.getcwd()
-    project = paths.gitroot(cwd)
+    project = paths.resolve_project(cwd)
     hook = evt.get("hook_event_name") or ""
     tool = evt.get("tool_name") or ""
     ti = evt.get("tool_input")

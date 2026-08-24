@@ -460,25 +460,35 @@ def test_handshake_bridges_envless_shell(tmp_data, conn, proj, monkeypatch):
     # CLI resolves the same store and session from it instead of forking a
     # parallel store as "unbound"
     from lib import paths as _paths
-    hs_dir = str(tmp_data) + "-handshake"
-    monkeypatch.setattr(_paths, "HANDSHAKE_DIR", hs_dir)
-    monkeypatch.setenv("HINDBRAIN_DATA", str(tmp_data))
+    hs_dir = os.environ["HINDBRAIN_HANDSHAKE_DIR"]  # set by tmp_data fixture
     _paths.write_handshake(proj, "hook-sess-42")
 
     env = os.environ.copy()
     for k in ("HINDBRAIN_DATA", "HINDBRAIN_DB", "HINDBRAIN_SESSION",
               "CLAUDE_PLUGIN_DATA", "HINDBRAIN_DISABLE"):
         env.pop(k, None)
-    code = (
-        "import sys; sys.path.insert(0, %r); from lib import paths\n"
-        "paths.HANDSHAKE_DIR = %r\n"
-        "import runpy; sys.argv = ['mem', 'save', '--kind', 'gotcha',"
-        " '--scope', 'command:make',"
-        " 'make deploy here needs VAULT_ADDR exported first']\n"
-        "runpy.run_path(%r, run_name='__main__')\n" % (ROOT, hs_dir, MEM))
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                       text=True, cwd=proj, env=env, timeout=60)
+    env["HINDBRAIN_HANDSHAKE_DIR"] = hs_dir
+    r = subprocess.run(
+        [sys.executable, MEM, "save", "--kind", "gotcha",
+         "--scope", "command:make",
+         "make deploy here needs VAULT_ADDR exported first"],
+        capture_output=True, text=True, cwd=proj, env=env, timeout=60)
     assert r.returncode == 0, r.stderr
     row = conn.execute(
         "SELECT source_session FROM memory ORDER BY created_at DESC").fetchone()
     assert row["source_session"] == "hook-sess-42"  # not "unbound"
+
+    # sticky workspace binding: from INSIDE a nested repo, project still
+    # resolves to the workspace the handshake describes, not the repo
+    repo = os.path.join(proj, "repoA")
+    os.makedirs(os.path.join(repo, ".git"), exist_ok=True)
+    r = subprocess.run(
+        [sys.executable, MEM, "save", "--kind", "fact", "--scope", "project",
+         "the staging cluster for this workspace lives in eu-west-1"],
+        capture_output=True, text=True, cwd=repo, env=env, timeout=60)
+    assert r.returncode == 0, r.stderr
+    row = conn.execute(
+        "SELECT project, source_session FROM memory "
+        "ORDER BY created_at DESC, rowid DESC").fetchone()
+    assert row["project"] == proj  # workspace, not proj/repoA
+    assert row["source_session"] == "hook-sess-42"

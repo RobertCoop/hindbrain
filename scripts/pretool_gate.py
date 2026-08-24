@@ -206,7 +206,7 @@ def main(evt, cfg):
     if not isinstance(ti, dict):
         ti = {}
     cwd = evt.get("cwd") or os.getcwd()
-    project = paths.gitroot(cwd)
+    project = paths.resolve_project(cwd)
     now = int(time.time())
     SUMMARY.update({"session": session, "agent": agent, "tool": tool,
                     "hits": 0, "inject": 0, "remind": 0, "deny": 0})

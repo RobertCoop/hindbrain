@@ -203,7 +203,7 @@ def _maybe_kick_consolidator(conn):
 def main(evt, cfg):
     session = evt.get("session_id") or "unknown"
     cwd = evt.get("cwd") or os.getcwd()
-    project = paths.gitroot(cwd)
+    project = paths.resolve_project(cwd)
     source = evt.get("source") or "startup"
     now = int(time.time())
 

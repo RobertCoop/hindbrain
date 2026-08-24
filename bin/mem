@@ -786,7 +786,7 @@ def main(argv):
         except OSError:
             pass
         os.environ["HINDBRAIN_DB"] = dbp
-    project0 = paths.gitroot(os.getcwd())
+    project0 = paths.resolve_project(os.getcwd())
     session = (getattr(args, "session", None)
                or os.environ.get("HINDBRAIN_SESSION")
                or paths.handshake_session(project0)  # env-less shell bridge
@@ -797,7 +797,7 @@ def main(argv):
             and not os.environ.get("HINDBRAIN_DB")
             and not os.environ.get("HINDBRAIN_DATA")
             and not os.environ.get("CLAUDE_PLUGIN_DATA")
-            and paths.read_handshake(project0) is None
+            and paths.ancestor_handshake(os.getcwd()) is None
             and not os.path.exists(
                 os.path.join(os.path.expanduser("~/.claude/hindbrain"),
                              "hindbrain.db"))):
@@ -812,7 +812,7 @@ def main(argv):
         return fail(f"cannot open database: {e}")
     try:
         cfg = paths.load_config()
-        project = paths.gitroot(os.getcwd())
+        project = paths.resolve_project(os.getcwd())
         return args.func(args, conn, cfg, session, project)
     except Exception as e:
         return fail(str(e))

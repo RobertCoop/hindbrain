@@ -16,20 +16,69 @@ def plugin_root() -> str:
 # home fallback as session "unbound". session_start writes the handshake at a
 # FIXED home path (findable with zero env); the CLI reads it before falling
 # back. Keyed by project so concurrent projects don't collide.
-HANDSHAKE_DIR = os.path.expanduser("~/.claude/hindbrain/handshake")
 SESSION_FRESH_S = 12 * 3600
+WORKSPACE_FRESH_S = 7 * 24 * 3600
+
+
+def _handshake_dir() -> str:
+    return (os.environ.get("HINDBRAIN_HANDSHAKE_DIR")
+            or os.path.expanduser("~/.claude/hindbrain/handshake"))
 
 
 def _handshake_path(project: str) -> str:
     import hashlib
     h = hashlib.sha256(os.path.abspath(project).encode("utf-8")).hexdigest()[:16]
-    return os.path.join(HANDSHAKE_DIR, f"{h}.json")
+    return os.path.join(_handshake_dir(), f"{h}.json")
+
+
+def ancestor_handshake(cwd: str, max_age_s: int = WORKSPACE_FRESH_S) -> dict | None:
+    # freshest handshake whose workspace contains cwd — this is what makes
+    # project binding STICKY: a multi-repo workspace resolves to the dir the
+    # session launched in, no matter which nested repo the shell has cd'd into
+    import time
+    d = os.path.abspath(cwd or os.getcwd())
+    try:
+        names = sorted(os.listdir(_handshake_dir()))[:64]
+    except OSError:
+        return None
+    now = time.time()
+    best = None
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(_handshake_dir(), name), encoding="utf-8") as f:
+                hs = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not (isinstance(hs, dict) and hs.get("data_dir") and hs.get("project")
+                and isinstance(hs.get("ts"), int)):
+            continue
+        if now - hs["ts"] > max_age_s:
+            continue
+        p = os.path.abspath(hs["project"])
+        if d == p or d.startswith(p + os.sep):
+            if best is None or hs["ts"] > best["ts"]:
+                best = hs
+    return best
+
+
+def resolve_project(cwd: str) -> str:
+    # HINDBRAIN_PROJECT env override -> containing workspace handshake ->
+    # git root of cwd (which is cwd itself outside any repo)
+    env = os.environ.get("HINDBRAIN_PROJECT")
+    if env:
+        return os.path.abspath(env)
+    hs = ancestor_handshake(cwd)
+    if hs:
+        return os.path.abspath(hs["project"])
+    return gitroot(cwd)
 
 
 def write_handshake(project: str, session_id: str) -> None:
     import time
     try:
-        os.makedirs(HANDSHAKE_DIR, mode=0o700, exist_ok=True)
+        os.makedirs(_handshake_dir(), mode=0o700, exist_ok=True)
         p = _handshake_path(project)
         tmp = p + f".tmp.{os.getpid()}"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -68,7 +117,7 @@ def data_dir() -> str:
     d = (os.environ.get("HINDBRAIN_DATA")
          or os.environ.get("CLAUDE_PLUGIN_DATA"))
     if not d:
-        hs = read_handshake(gitroot(os.getcwd()))
+        hs = ancestor_handshake(os.getcwd())
         if hs:
             d = hs["data_dir"]
     d = os.path.abspath(d or os.path.expanduser("~/.claude/hindbrain"))

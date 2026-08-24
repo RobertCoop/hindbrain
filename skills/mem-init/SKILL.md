@@ -114,7 +114,11 @@ it — rare in a bootstrap).
 keyed to running a tool; `path:<glob>` for anything keyed to editing files;
 `project` for facts/decisions; `global` only for truths about the *user's
 machine or tooling* that hold across projects. When one lesson spans sibling
-commands, use the `|` form (`command:pytest|make`).
+commands, use the `|` form (`command:pytest|make`). Path globs are matched
+relative to the **workspace root** — the directory the session launched in.
+In a multi-repo workspace (a parent dir containing several repos), include
+the repo dir in the glob (`repoA/src/db/**`, not `src/db/**`), and consider
+a repo-name tag so prompt-tier retrieval can tell the repos apart.
 
 **Strength** — three independent levers:
 

@@ -173,20 +173,43 @@ def _git(root, *args):
         return ""
 
 
+def _nested_repos(root):
+    # the workspace itself, or (multi-repo workspace) its immediate child repos
+    if os.path.isdir(os.path.join(root, ".git")):
+        return [("", root)]
+    out = []
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return []
+    for n in names:
+        if n in SKIP_DIRS or n.startswith("."):
+            continue
+        p = os.path.join(root, n)
+        if os.path.isdir(os.path.join(p, ".git")):
+            out.append((n, p))
+            if len(out) >= 10:
+                break
+    return out
+
+
 def git_history(root):
-    log = _git(root, "log", "--oneline", "-200")
-    if not log:
-        return {"suspicious_commits": [], "churn_files": []}
-    suspicious = [l[:200] for l in log.splitlines()
-                  if SUSPICIOUS_COMMIT.search(l)][:30]
-    names = _git(root, "log", "--name-only", "--pretty=format:", "-200")
-    counts = {}
-    for l in names.splitlines():
-        l = l.strip()
-        if l:
-            counts[l] = counts.get(l, 0) + 1
+    suspicious, counts = [], {}
+    for label, path in _nested_repos(root):
+        log = _git(path, "log", "--oneline", "-200")
+        if not log:
+            continue
+        pre = f"{label}: " if label else ""
+        suspicious.extend(pre + l[:200] for l in log.splitlines()
+                          if SUSPICIOUS_COMMIT.search(l))
+        names = _git(path, "log", "--name-only", "--pretty=format:", "-200")
+        fpre = f"{label}/" if label else ""
+        for l in names.splitlines():
+            l = l.strip()
+            if l:
+                counts[fpre + l] = counts.get(fpre + l, 0) + 1
     churn = sorted(counts.items(), key=lambda kv: -kv[1])[:15]
-    return {"suspicious_commits": suspicious,
+    return {"suspicious_commits": suspicious[:30],
             "churn_files": [{"file": f, "changes": c} for f, c in churn
                             if c >= 3]}
 

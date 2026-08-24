@@ -55,7 +55,7 @@ def main(evt):
     cfg = paths.load_config()
     session = evt.get("session_id") or "unknown"
     cwd = evt.get("cwd") or os.getcwd()
-    project = paths.gitroot(cwd)
+    project = paths.resolve_project(cwd)
     now = int(time.time())
     conn = db.connect()
     db.ensure_schema(conn)
