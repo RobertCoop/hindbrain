@@ -198,7 +198,15 @@ def test_corroborate_promotes_pending_to_standard(tmp_data, conn, proj):
     assert r.returncode == 0 and "count=1" in r.stdout
     assert db_row(conn, mid)["authority"] == "pending"
 
+    # same-session retry is idempotent: no ratchet toward standard
     r = mem_cmd(["corroborate", mid], tmp_data, s, proj)
+    assert r.returncode == 0
+    assert "count unchanged" in r.stdout
+    row = db_row(conn, mid)
+    assert row["corroborations"] == 1 and row["authority"] == "pending"
+
+    # a distinct session's corroboration promotes
+    r = mem_cmd(["corroborate", mid], tmp_data, "sess-corr-2", proj)
     assert r.returncode == 0
     assert "promoted pending -> standard" in r.stdout
     row = db_row(conn, mid)

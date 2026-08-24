@@ -64,18 +64,39 @@ def scope_str(m):
     return f"{st}:{sv}" if sv else st
 
 
-def open_candidates(conn, session):
+def open_candidates(conn, session, project=None):
     # session rows + unbound rows younger than 2h (§3.4 degraded binding)
     cutoff = int(time.time()) - 7200
     rows = conn.execute(
         "SELECT * FROM candidate WHERE status='open' AND "
         "(session_id = ? OR (session_id = 'unbound' AND ts > ?)) "
         "ORDER BY ts, id", (session, cutoff)).fetchall()
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    if session == "unbound" and project:
+        # symmetric degraded binding: an unbound CLI can still see recent
+        # session-bound candidates for this project (the stop hook created
+        # them with the session id the CLI failed to inherit)
+        seen = {c["id"] for c in out}
+        extra = conn.execute(
+            "SELECT * FROM candidate WHERE status='open' AND ts > ? "
+            "AND session_id != 'unbound' ORDER BY ts, id",
+            (cutoff,)).fetchall()
+        for r in extra:
+            c = dict(r)
+            if c["id"] in seen:
+                continue
+            try:
+                p = json.loads(c.get("payload") or "{}")
+            except (ValueError, TypeError):
+                continue
+            if isinstance(p, dict) and p.get("project") == project:
+                out.append(c)
+        out.sort(key=lambda c: (c.get("ts") or 0, c["id"]))
+    return out
 
 
-def pick_candidate(conn, session, ref):
-    cands = open_candidates(conn, session)
+def pick_candidate(conn, session, ref, project=None):
+    cands = open_candidates(conn, session, project)
     try:
         n = int(ref)
         if 1 <= n <= len(cands):
@@ -125,7 +146,26 @@ def decide_channel(body, session, conn, cfg, channel_flag, cand, project=None):
     return "agent", "; ".join(notes)
 
 
+def _corroborated_this_session(conn, session, mem_id):
+    rows = conn.execute(
+        "SELECT data FROM journal WHERE session_id=? AND event='corroborate' "
+        "ORDER BY ts DESC LIMIT 200", (session,)).fetchall()
+    for r in rows:
+        try:
+            d = json.loads(r["data"])
+        except (ValueError, TypeError):
+            continue
+        if isinstance(d, dict) and d.get("memory_id") == mem_id:
+            return True
+    return False
+
+
 def apply_corroborate(conn, cfg, session, mem_id):
+    # idempotent per (memory, session): a retry loop (e.g. repeated failed
+    # mem confirm attempts) must not ratchet count -> standard authority
+    if _corroborated_this_session(conn, session, mem_id):
+        m = db.get_memory(conn, mem_id)
+        return m, "already corroborated this session (count unchanged)"
     conn.execute("UPDATE memory SET corroborations = corroborations + 1 "
                  "WHERE id = ?", (mem_id,))
     conn.commit()
@@ -198,7 +238,7 @@ def cmd_save(args, conn, cfg, session, project):
 
     cand = None
     if args.from_candidate:
-        cand = pick_candidate(conn, session, args.from_candidate)
+        cand = pick_candidate(conn, session, args.from_candidate, project)
         if cand is None:
             return fail(f"no open candidate {args.from_candidate} (see mem queue)")
 
@@ -372,7 +412,7 @@ def cmd_list(args, conn, cfg, session, project):
 
 
 def cmd_queue(args, conn, cfg, session, project):
-    cands = open_candidates(conn, session)
+    cands = open_candidates(conn, session, project)
     if not cands:
         emit(["queue empty"])
         return 0
@@ -399,7 +439,7 @@ def cmd_queue(args, conn, cfg, session, project):
 
 
 def cmd_drop(args, conn, cfg, session, project):
-    cand = pick_candidate(conn, session, args.n)
+    cand = pick_candidate(conn, session, args.n, project)
     if cand is None:
         return fail(f"no open candidate {args.n} (see mem queue)")
     conn.execute("UPDATE candidate SET status='dropped' WHERE id=?", (cand["id"],))
@@ -455,8 +495,9 @@ def cmd_confirm(args, conn, cfg, session, project):
                      "journaling under a different session id (resume/fork), or "
                      "the message was a !-command (those never journal)")
     lines.append("full authority requires a chat message from the user naming "
-                 "this note (its id or full title) with a cue word "
-                 "(yes/confirm/correct/trust/keep), within their last 5 turns")
+                 "this note (its id or most of its title) with a cue word, "
+                 "within their last 5 turns — a !-command never counts")
+    lines.append(f'ask the user to say:  confirm {m["id"]}')
     if note:
         lines.append(note)
     emit(lines)

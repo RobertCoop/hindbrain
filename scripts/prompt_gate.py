@@ -59,7 +59,20 @@ def _hash_words(words):
     return [hashlib.sha256(w.encode("utf-8")).hexdigest() for w in sorted(words)]
 
 
+_SYNTHETIC_RE = re.compile(
+    r"^\s*(<task-notification\b|<system-reminder\b|<command-name\b|"
+    r"<local-command-|<bash-input\b|<bash-stdout\b|\[Request interrupted)")
+
+
+def _is_synthetic_turn(text):
+    # harness-injected wrappers (task notifications, command echoes, system
+    # reminders) arrive shaped like user prompts; they must not occupy the
+    # witness window or count as the user's own words
+    return bool(_SYNTHETIC_RE.match(text or ""))
+
+
 def _journal_event(conn, cfg, session, project, turn, event, text):
+    synthetic = _is_synthetic_turn(text)
     if cfg["security"]["redact_journal"]:
         words = witness.content_words(text)
         # AM-5: content_words drops stopwords ("yes"), but confirm_witnessed's
@@ -70,6 +83,8 @@ def _journal_event(conn, cfg, session, project, turn, event, text):
                 "project": project, "turn": turn}
     else:
         data = {"text": text, "project": project, "turn": turn}
+    if synthetic:
+        data["synthetic"] = True
     db.journal(conn, session, "main", event, data)
 
 

@@ -35,10 +35,12 @@ def _jaccard(a, b):
 
 
 def _last_user_prompts(conn, session_id, n):
+    # over-fetch: synthetic wrapper turns are dropped AFTER the query, and
+    # must not crowd genuine turns out of the n-turn witness window
     try:
         rows = conn.execute(
             "SELECT data FROM journal WHERE session_id=? AND event='user_prompt' "
-            "ORDER BY ts DESC LIMIT ?", (session_id, n)).fetchall()
+            "ORDER BY ts DESC LIMIT ?", (session_id, n * 4)).fetchall()
     except Exception:
         return []
     out = []
@@ -47,8 +49,10 @@ def _last_user_prompts(conn, session_id, n):
             d = json.loads(r[0])
         except (ValueError, TypeError, IndexError):
             continue
-        if isinstance(d, dict):
+        if isinstance(d, dict) and not d.get("synthetic"):
             out.append(d)
+            if len(out) >= n:
+                break
     return out
 
 
@@ -75,7 +79,8 @@ def recent_project_prompts(conn, project, n=10, window_s=FALLBACK_WINDOW_S):
             d = json.loads(r[0])
         except (ValueError, TypeError, IndexError):
             continue
-        if isinstance(d, dict) and d.get("project") == project:
+        if (isinstance(d, dict) and d.get("project") == project
+                and not d.get("synthetic")):
             out.append(d)
             if len(out) >= n:
                 break
@@ -153,13 +158,17 @@ def confirm_witnessed(mem, session_id, conn, cfg, project=None):
                 hashed_title = _hash_set(title_words)
             cue = bool(_hash_set(CUES) & u)
             id_ref = bool(mid) and _hash_word(mid) in u
-            title_ref = bool(title_words) and hashed_title <= u
+            title_ref = (bool(title_words)
+                         and len(hashed_title & u) / len(hashed_title) >= 0.6)
         else:
             text = (row.get("text") or "").lower()
             u = content_words(text)
             cue = bool(CUES & set(_tokens(text)))
             id_ref = bool(mid) and mid in text
-            title_ref = bool(title_words) and title_words <= u
+            # >=60% of title content-words: all-subset is unreachable in
+            # natural speech for prose titles
+            title_ref = (bool(title_words)
+                         and len(title_words & u) / len(title_words) >= 0.6)
         if (id_ref or title_ref) and cue:
             return True
         if _matches(body_words, hashed_body, row):
