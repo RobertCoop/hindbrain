@@ -26,7 +26,26 @@ Work in five passes. Do not save anything until pass 3.
 
 ### Pass 1 — Survey (read, don't save)
 
-Mine these sources, in rough order of yield:
+Three ways to run the survey, by decreasing leverage — use the best one your
+environment offers. On every path the survey is **read-only**: nothing saves
+until pass 3, in your own context, after your own review.
+
+- **Plugin workflow** (best): run the `mem-init-scan` workflow
+  (`/hindbrain:mem-init-scan`, or the Workflow tool with the plugin-namespaced
+  name), passing any user focus hint as args. It fans out four read-only
+  scouts over the sources below, dedupes, judges, and returns 10–30 ranked
+  proposals plus a cut summary — your context never sees the raw survey. Then
+  skip to pass 2 treating the proposals as your candidate list (the judge
+  already applied the bar once; you still verify and dedup before saving).
+- **Subagents** (no workflows): spawn read-only `mem-scout` agents (the
+  plugin ships the agent definition), one per source group below; merge their
+  candidate lists yourself.
+- **Inline** (neither): start with `mem scout --json` — the deterministic
+  survey that greps confession comments, task-runner/CI recipes, git churn
+  and suspicious commits, and environment shape for you — then read only its
+  hits plus the judgment-heavy sources (docs/ADRs) yourself.
+
+The sources, in rough order of yield:
 
 1. **Task-runner and CI truth** — Makefile/justfile/package.json scripts,
    tox.ini/noxfile, `.github/workflows/*`: the flags, env vars, and orderings a
@@ -36,11 +55,12 @@ Mine these sources, in rough order of yield:
 2. **Confession comments** — grep the codebase for
    `HACK|WORKAROUND|XXX|FIXME|NOTE:|careful|don't|do not|must not|gotcha|footgun`
    (case-insensitive). A comment warning the next human is a gotcha wanting to
-   be a memory.
+   be a memory. (`mem scout` finds these mechanically.)
 3. **Git history** — `git log --oneline -60`, plus
    `git log --grep 'revert\|fix.*again\|workaround' -i --oneline`. Reverts,
    repeated fixes to one file, and "make X work on Y" commits are footguns with
-   receipts. `git log --follow` on suspicious files if needed.
+   receipts. `git log --follow` on suspicious files if needed. (`mem scout`
+   surfaces suspicious commits and churn hotspots; you supply the reading.)
 4. **Decision records** — ADRs, design docs, RFC directories, or decision
    paragraphs in docs: choices **with rationale**, especially where an obvious
    alternative was rejected.

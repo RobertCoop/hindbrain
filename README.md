@@ -151,6 +151,7 @@ mem refute ID ["note"]    # mark wrong; excluded from surfacing
 mem pin ID | mem unpin ID
 mem audit ID          # lineage: source, supersession chain, corroborations, accesses
 mem stats             # counts by kind/authority/status; acceptance metrics
+mem scout [--json] [--path DIR]   # read-only bootstrap survey of a project (see mem-init)
 ```
 
 Authority is granted from **hook-witnessed evidence**, never from agent flags: a claim matching a logged user turn gets `full`-track treatment, observer-witnessed fixes get `standard`, plain agent notes start `pending`, and web/tool-derived content is `quarantined` until corroborated across sessions. `--prior` sets only cold-start activation strength, never authority.
@@ -158,6 +159,8 @@ Authority is granted from **hook-witnessed evidence**, never from agent flags: a
 ### First-run bootstrap: `/hindbrain:mem-init`
 
 Starting hindbrain against an existing project? Run `/hindbrain:mem-init` (optionally with a focus hint, e.g. `/hindbrain:mem-init the deploy pipeline`). It walks the agent through the **mem-init** skill: survey CI/task-runner truth, confession comments, git history, decision records, and doc caveats; filter through the durable/non-obvious/actionable/scoped bar; verify claims before saving; and seed 10–30 well-scoped memories with deliberate kind, scope, and `--prior` strength. It ends with a `mem confirm` shortlist for you — user confirmation is what grants `full` authority and arms the deny tier for any seeded hazards.
+
+Three survey backends, picked automatically by capability: the **`mem-init-scan` plugin workflow** (`/hindbrain:mem-init-scan` — parallel read-only scouts, a judge pass, and a ranked proposal list, with the raw survey kept out of the main context; requires dynamic workflows to be enabled), the **`mem-scout` subagent** the plugin ships (one read-only scout per evidence source), or the fully inline path starting from **`mem scout --json`** — a deterministic, dependency-free survey of confession comments, task-runner/CI recipes, git churn, and environment shape. On every path the survey only *proposes*: saves happen in the main session, and seeded memories start at `pending` authority regardless of backend.
 
 ## Consolidator
 
