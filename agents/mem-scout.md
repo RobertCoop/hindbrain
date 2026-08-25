@@ -57,7 +57,8 @@ Return ONLY a JSON array (no prose around it) of candidate objects:
   "hazard": false,
   "evidence": "file:line or commit hash this came from",
   "verified": false,
-  "rationale": "one line: why this clears the bar"
+  "rationale": "one line: why this clears the bar",
+  "cluster": "short subsystem/file/commit label so related candidates can be linked"
 }]
 ```
 

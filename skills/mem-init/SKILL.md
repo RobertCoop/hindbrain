@@ -128,7 +128,11 @@ it — rare in a bootstrap).
 keyed to running a tool; `path:<glob>` for anything keyed to editing files;
 `project` for facts/decisions; `global` only for truths about the *user's
 machine or tooling* that hold across projects. When one lesson spans sibling
-commands, use the `|` form (`command:pytest|make`). Path globs are matched
+commands, use the `|` form (`command:pytest|make`). Prefer `path:` scopes for
+any file-keyed knowledge: they fire structurally on edits, on bash commands
+whose args touch the files (`sed`/`cat`/`python x.py`), and on the Read tool
+— where even fresh `pending` seeds may remind, the friendliest surfacing
+point for unproven bootstrap notes. Path globs are matched
 relative to the **workspace root** — the directory the session launched in.
 In a multi-repo workspace (a parent dir containing several repos), include
 the repo dir in the glob (`repoA/src/db/**`, not `src/db/**`), and consider
@@ -162,19 +166,51 @@ synonyms and sibling invocations (`pytest` → `tests,test,make`), and for every
 `decision`, **tag the rejected alternative** — the violating code will contain
 the *other* word (`uuid` on a "use ULIDs" decision).
 
+### Pass 3.5 — Link the islands
+
+Seeded memories start unconnected; the Hebbian consolidator needs sessions of
+observed co-firing to connect them, but *you* just read the evidence and
+already know the structure. After saving, create `mem link` associations —
+when one memory surfaces, its partners follow at `anchor_score × strength`
+through the same inject/remind thresholds:
+
+- **Dependency pairs** — a procedure and the env fact it needs; a gotcha and
+  the decision that caused it; a hazard and its safe-alternative procedure.
+  "If one matters, the other almost always matters" → `--strength 0.6–0.8`
+  (injects alongside its anchor at steady state).
+- **Cluster siblings** — notes mined from the same subsystem, file, or
+  commit → `--strength 0.3–0.45` (remind-tier pointer).
+- **The retrieval backstop** — the highest-value link: when a note's
+  title/body/tags cannot plausibly contain the words that will be in context
+  at the moment it matters (the decision whose violation uses the *other*
+  word; the quirk described in prose no query will echo), link it at
+  0.6–0.8 to a sibling that *will* be retrieved (the well-named gotcha, the
+  command-scoped note). The link becomes its retrieval path.
+
+Discipline: **≤ 2–3 links per memory, no hubs** — a note linked to
+everything spreads noise on every surfacing. Don't link pairs that will
+obviously co-fire on their own; the consolidator earns those automatically,
+strengthens links that prove out, and decays ones that don't (links you set
+are pinned until you change them).
+
 ### Pass 4 — Review
 
 `mem list --project` and reread everything you saved as if you were the gate:
 titles that would read as noise at the wrong moment get tightened or refuted
 (`mem refute <id>`); near-duplicates get consolidated via `mem supersede`.
 Check total count against the 10–30 target — if you're over, cut from the
-bottom of the value ranking, not the top.
+bottom of the value ranking, not the top. Spot-check the link graph with
+`mem links` on your most-connected notes: any memory acting as a hub
+(4+ links) gets pruned to its best 2–3.
 
 ### Pass 5 — Report
 
 End with a short report to the user:
 
-1. Count saved, by kind, plus anything pinned.
+1. Count saved, by kind, plus anything pinned, plus links created (pairs and
+   strengths, one line each) — note that link strengths self-tune from here:
+   the consolidator reinforces associations that prove out and decays ones
+   that don't, while links you set explicitly stay pinned.
 2. **The confirm list**: the 3–8 highest-stakes notes (all hazards, plus any
    note whose wrongness would be costly), each as a ready-to-run
    `mem confirm <id>` line — user confirmation grants `full` authority and is

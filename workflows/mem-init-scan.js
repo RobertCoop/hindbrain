@@ -32,6 +32,7 @@ const CANDIDATES_SCHEMA = {
           evidence: { type: 'string', description: 'file:line or commit hash' },
           verified: { type: 'boolean' },
           rationale: { type: 'string' },
+          cluster: { type: 'string', description: 'short label for the subsystem/file/commit this evidence came from, so related candidates can be linked' },
         },
       },
     },
@@ -45,7 +46,9 @@ from one glance at the repo), ACTIONABLE (changes a command, an edit, or a choic
 SCOPED (attachable to a command, path, or this project). Skip project descriptions, API
 surfaces, layouts, linter-enforced style, secrets (env var NAMES are fine, values never),
 CLAUDE.md/auto-memory duplication, and anything transient or aspirational. Quality over
-coverage — an empty list is a valid result. Read-only: never run mem save, never edit files.
+coverage — an empty list is a valid result. Set each candidate's "cluster" to a short label
+for the subsystem/file/commit its evidence came from (e.g. "auth", "repoB/worker", "deploy
+pipeline") so the judge can link related candidates. Read-only: never run mem save, never edit files.
 ${focus ? `The user asked you to weight the survey toward: ${focus}.` : ''}`
 
 const SOURCES = [
@@ -118,11 +121,20 @@ memory candidates from four read-only scouts of this project. Produce the FINAL 
    a --help flag, the file the evidence cites still saying what the candidate claims); update
    verified/prior accordingly. Downgrade prior to 1.0 for anything you could not verify.
 4. For each survivor: tighten the title to the line you'd want to see before repeating the
-   mistake; ensure scope is the NARROWEST true scope; ensure decisions tag the rejected
-   alternative; set hazard=true only for confirmed destructive footguns on consequential
-   commands.
+   mistake; ensure scope is the NARROWEST true scope (prefer path: scopes for file-keyed
+   knowledge — they now fire on edits, bash file args, and Read); ensure decisions tag the
+   rejected alternative; set hazard=true only for confirmed destructive footguns on
+   consequential commands.
 5. Rank by expected value and keep AT MOST 30 (target 10-30; fewer is fine). Also list what
    you cut and why, in one line per theme (not per item).
+6. Propose associative links between survivors (by 0-based index into your proposals list):
+   dependency pairs (procedure <-> the env fact it needs; gotcha <-> the decision that
+   caused it; hazard <-> its safe alternative) at strength 0.6-0.8; same-cluster siblings
+   at 0.3-0.45; and — highest value — the retrieval backstop: a survivor whose title/body/
+   tags cannot contain the words that will be in context when it matters gets linked
+   0.6-0.8 to a sibling that WILL be retrieved. Discipline: at most 2-3 links per proposal,
+   no hubs, and skip pairs that will obviously co-fire on their own (the consolidator
+   earns those automatically).
 
 Never run mem save; never edit files. Return via the schema.
 
@@ -136,14 +148,31 @@ ${JSON.stringify(merged, null, 1)}`,
       properties: {
         proposals: CANDIDATES_SCHEMA.properties.candidates,
         cut_summary: { type: 'array', items: { type: 'string' } },
+        proposed_links: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['a', 'b', 'strength', 'rationale'],
+            properties: {
+              a: { type: 'integer', description: '0-based index into proposals' },
+              b: { type: 'integer', description: '0-based index into proposals' },
+              strength: { type: 'number', description: '0..1 per the linking rules' },
+              rationale: { type: 'string' },
+            },
+          },
+        },
       },
     },
   })
 
 const proposals = (judged && judged.proposals) || merged.slice(0, 30)
-log(`${proposals.length} final proposals`)
+const links = ((judged && judged.proposed_links) || []).filter(l =>
+  Number.isInteger(l.a) && Number.isInteger(l.b) && l.a !== l.b &&
+  l.a >= 0 && l.a < proposals.length && l.b >= 0 && l.b < proposals.length)
+log(`${proposals.length} final proposals, ${links.length} proposed links`)
 return {
   proposals,
+  proposed_links: links,
   cut_summary: (judged && judged.cut_summary) || [],
-  next_steps: 'Review each proposal, then save the keepers with: mem save --kind <kind> --scope <scope> --tags <tags> --prior <prior> [--hazard] "<body>" (add --title for a custom title). Dedup with mem search before each save. Finish by showing the user a mem confirm shortlist for the highest-stakes notes — user confirmation grants full authority and arms any hazards.',
+  next_steps: 'Review each proposal, then save the keepers with: mem save --kind <kind> --scope <scope> --tags <tags> --prior <prior> [--hazard] "<body>" (add --title for a custom title). Dedup with mem search before each save. After saving, create the proposed_links between the ids you actually saved: mem link <idA> <idB> --strength <s> (skip links whose endpoints you dropped; keep at most 2-3 links per memory). Finish by showing the user a mem confirm shortlist for the highest-stakes notes — user confirmation grants full authority and arms any hazards — and list the links created.',
 }
