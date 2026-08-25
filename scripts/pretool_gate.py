@@ -41,8 +41,28 @@ def _exact_scoped(conn, scope_type, project, ctx):
     for r in rows:
         d = dict(r)
         d["bm25"] = 0.0
+        d["_scope_exact"] = True  # verified above; survives ctx retargeting
         out.append(d)
     return out
+
+
+def _file_args(subs, cwd, project, cap=8):
+    # positional args of a bash command that are real files under the
+    # workspace — what makes `sed`/`cat`/`python x.py` reads visible to
+    # path-scoped memories
+    found, checked = [], 0
+    for toks in subs:
+        for t in toks[1:]:
+            if t.startswith("-") or len(t) < 3 or checked >= cap:
+                continue
+            if not ("/" in t or "." in os.path.basename(t)):
+                continue
+            checked += 1
+            p = t if os.path.isabs(t) else os.path.join(cwd, t)
+            p = os.path.abspath(p)
+            if (p == project or p.startswith(project + os.sep)) and os.path.isfile(p):
+                found.append(p)
+    return found
 
 
 def _is_consequential(cmd, subs, cfg):
@@ -186,12 +206,23 @@ def _bash_branch(conn, cfg, st, session, agent, cwd, project, ti, now):
                 return _decision("deny", render.render_deny(m, now), cfg)
 
     # ---- injection tier ----
+    # file args make `sed`/`cat`/`python x.py` reads visible to path scopes;
+    # path hits never join the deny tier (deny is command-scope-only in v1)
+    files = _file_args(subs, cwd, project)
+    path_hits = []
+    for fp in files:
+        fctx = scoring.Ctx(session=session, agent=agent, cwd=cwd,
+                           project=project, file_path=fp, tool_name="Bash")
+        path_hits.extend(_exact_scoped(conn, "path", project, fctx))
+    if files:
+        ctx.file_path = files[0]
     toks = []
     for s in subs:
         toks.extend(signatures.head(s))
         toks.extend(t.lstrip("-") for t in s if t.startswith("-") and len(t) > 1)
+    toks.extend(os.path.basename(f) for f in files)
     q = querybuild.fts_query(" ".join(toks))
-    hits = scoped + (db.search(conn, q, project, k=12) if q else [])
+    hits = scoped + path_hits + (db.search(conn, q, project, k=12) if q else [])
     SUMMARY["hits"] = len(hits)
     taus = scoring.struggle_adjusted(cfg, st)
     inject, remind = scoring.gate(hits, st, ctx, cfg, conn, taus, now)
@@ -211,10 +242,15 @@ def main(evt, cfg):
     SUMMARY.update({"session": session, "agent": agent, "tool": tool,
                     "hits": 0, "inject": 0, "remind": 0, "deny": 0})
 
+    if tool == "Read" and not cfg["general"].get("read_gate", True):
+        return None
+
     conn = db.connect()
     db.ensure_schema(conn)
     st = state.load(session, agent)
-    if tool in EDIT_TOOLS:
+    if tool in EDIT_TOOLS or tool == "Read":
+        # Read reuses the edit branch: file_path + no content, and
+        # command_adjacent=False, so pending-authority notes may remind here
         return _edit_branch(conn, cfg, st, session, agent, cwd, project, tool,
                             ti, now)
     if tool == "Bash":

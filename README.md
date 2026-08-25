@@ -176,6 +176,10 @@ A memory's `project` is the **workspace**. The durable way to declare one is the
 
 Full resolution precedence: `HINDBRAIN_PROJECT` env → nearest `.hindbrain` anchor → freshest session handshake whose workspace contains cwd (written at SessionStart; stale after 7 days) → git root of cwd. The anchor file's presence is what matters; its content is reserved. `mem scout` aggregates git mining across immediate child repos when the workspace root isn't itself a repo.
 
+### Where path scopes fire
+
+Path-scoped memories surface on: the edit-family tools (structured `file_path`); **Bash commands whose positional args are real files under the workspace** (`sed`/`cat`/`grep`/`python x.py` — file basenames also join the retrieval query), where the command-adjacent authority rules apply (`pending` notes stay silent until corroborated); and the **Read tool** (non-command-adjacent, so `pending` notes may remind there). The Read gate costs a hook spawn per read — set `read_gate = false` under `[general]` to skip its work, or remove the `Read` matcher from `hooks/hooks.json` to avoid the spawn entirely.
+
 ## Consolidator
 
 `python3 consolidator/consolidate.py` runs the offline maintenance passes (GC, expiry, dedup, contradiction report, reconsolidation check, promotions, CLAUDE.md graduation proposals, metrics rollup). It is a flock singleton and is normally kicked automatically by SessionStart/SessionEnd when the last run is older than 24 h; running it by hand is always safe and idempotent. Reports land in `<data>/reports/`.

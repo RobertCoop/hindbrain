@@ -60,3 +60,4 @@ llm_passes = false     # consolidator claude -p passes (v1.1)
 
 [general]
 enabled = true         # config-level kill switch (in addition to HINDBRAIN_DISABLE env)
+read_gate = true       # surface path-scoped notes on Read tool calls (costs a hook spawn per read; set false to skip)

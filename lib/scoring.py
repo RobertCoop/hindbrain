@@ -45,7 +45,10 @@ def score(hit, ctx, cfg, act):
     bm25 = float(hit.get("bm25") or 0.0)
     r = max(0.0, -bm25)
     rel = r / (r + sc["rel_k"])
-    m = scopes.match(hit, ctx)
+    # callers that pre-verified an exact scope hit against a specific target
+    # (e.g. one of several file args in a bash command) stamp _scope_exact;
+    # ctx carries only a single file_path so match() alone can't see those
+    m = "exact" if hit.get("_scope_exact") else scopes.match(hit, ctx)
     # FTS5's IDF collapses to ~1e-6 in small corpora, zero-killing every match
     # (A3 by another route); a true match or exact scope hit gets a rel floor.
     if bm25 < 0.0 or m == "exact":

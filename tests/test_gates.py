@@ -530,3 +530,55 @@ def test_deny_needs_full_authority(tmp_data, conn, tmp_path):
     out = hook_output(proc, "PreToolUse")
     if out is not None:
         assert "permissionDecision" not in out["hookSpecificOutput"]
+
+
+def test_bash_file_read_triggers_path_scope(tmp_data, conn, tmp_path):
+    # sed/cat-style reads: positional file args make path scopes fire in the
+    # Bash branch; pending notes stay excluded there (§5 capability table)
+    low_tau_config(tmp_data)
+    (tmp_path / ".hindbrain").write_text("")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "db.py").write_text("engine = create_engine(...)\n")
+    ok = seed_memory(conn, "db.py schema changes must go through alembic here",
+                     scope_type="path", scope_value="src/**",
+                     project=str(tmp_path), authority="standard")
+    pend = seed_memory(conn, "unproven note about the same src files",
+                       scope_type="path", scope_value="src/**",
+                       project=str(tmp_path), authority="pending")
+    evt = {"session_id": "s-sed", "cwd": str(tmp_path), "tool_name": "Bash",
+           "tool_input": {"command": "sed -n '1,50p' src/db.py"},
+           "hook_event_name": "PreToolUse"}
+    proc = run_hook("pretool_gate.py", evt, hook_env(tmp_data))
+    out = hook_output(proc, "PreToolUse")
+    assert out is not None
+    text = out["hookSpecificOutput"]["additionalContext"]
+    assert ok in text
+    assert pend not in text
+    assert "permissionDecision" not in out["hookSpecificOutput"]
+
+
+def test_read_tool_gate_and_flag(tmp_data, conn, tmp_path):
+    # the Read tool goes through the edit branch: pending notes MAY remind
+    low_tau_config(tmp_data)
+    (tmp_path / "src").mkdir()
+    fp = tmp_path / "src" / "db.py"
+    fp.write_text("engine = create_engine(...)\n")
+    pend = seed_memory(conn, "db.py schema changes must go through alembic",
+                       scope_type="path", scope_value="src/**",
+                       project=str(tmp_path), authority="pending")
+    evt = {"session_id": "s-read", "cwd": str(tmp_path), "tool_name": "Read",
+           "tool_input": {"file_path": str(fp)},
+           "hook_event_name": "PreToolUse"}
+    proc = run_hook("pretool_gate.py", evt, hook_env(tmp_data))
+    out = hook_output(proc, "PreToolUse")
+    assert out is not None
+    assert pend in out["hookSpecificOutput"]["additionalContext"]
+
+    # read_gate = false silences the Read branch (fresh session id: no dedup)
+    with open(os.path.join(str(tmp_data), "config.toml"), "w") as f:
+        f.write("[thresholds]\ntau_hi = 0.05\ntau_lo = 0.01\n"
+                "[general]\nread_gate = false\n")
+    evt["session_id"] = "s-read2"
+    proc = run_hook("pretool_gate.py", evt, hook_env(tmp_data))
+    assert proc.returncode == 0
+    assert proc.stdout.decode().strip() == ""
