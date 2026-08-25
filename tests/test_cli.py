@@ -492,3 +492,62 @@ def test_handshake_bridges_envless_shell(tmp_data, conn, proj, monkeypatch):
         "ORDER BY created_at DESC, rowid DESC").fetchone()
     assert row["project"] == proj  # workspace, not proj/repoA
     assert row["source_session"] == "hook-sess-42"
+
+
+def test_reinit_preview_wipe_and_backup(tmp_data, conn, proj):
+    import glob
+    from lib import db as _db, ids as _ids
+    s = "sess-reinit"
+    now = int(time.time())
+
+    def mk(project, body):
+        mid = _ids.ulid()
+        conn.execute(
+            "INSERT INTO memory(id, title, body, kind, scope_type, project, "
+            "created_at) VALUES (?,?,?,?,?,?,?)",
+            (mid, body[:80], body, "fact", "project", project, now))
+        conn.commit()
+        return mid
+
+    ws1 = mk(proj, "workspace note that should be erased on re-init")
+    ws2 = mk(proj, "second workspace note that should also be erased")
+    other = mk("/elsewhere", "other project's note that must survive")
+    glob_ = mk("", "global note shared across projects that must survive")
+    _db.log_access(conn, ws1, s, "main", "injected")
+    _db.upsert_link(conn, ws1, ws2, 0.7)
+    seed_candidate(conn, s, payload={"project": proj, "text": "x"})
+    seed_candidate(conn, "s-other", payload={"project": "/elsewhere"})
+
+    # preview deletes nothing
+    r = mem_cmd(["re-init"], str(tmp_data), s, proj)
+    assert r.returncode == 0
+    assert "2 memories" in r.stdout and "1 candidates" in r.stdout
+    assert "nothing was deleted" in r.stdout
+    assert conn.execute("SELECT COUNT(*) FROM memory").fetchone()[0] == 4
+
+    # --yes wipes workspace scope only, after a backup
+    r = mem_cmd(["re-init", "--yes"], str(tmp_data), s, proj)
+    assert r.returncode == 0 and "erased 2 memories" in r.stdout
+    left = {x[0] for x in conn.execute("SELECT id FROM memory")}
+    assert left == {other, glob_}
+    assert conn.execute("SELECT COUNT(*) FROM access_log WHERE memory_id=?",
+                        (ws1,)).fetchone()[0] == 0
+    assert _db.links_for(conn, ws1) == []
+    assert conn.execute(
+        "SELECT COUNT(*) FROM candidate WHERE session_id='s-other'"
+    ).fetchone()[0] == 1  # other project's candidate survives
+
+    baks = sorted(glob.glob(os.path.join(str(tmp_data), "hindbrain.db.reinit-*.bak")))
+    assert len(baks) >= 1
+    import sqlite3 as _sq
+    bconn = _sq.connect(baks[0])
+    assert bconn.execute("SELECT COUNT(*) FROM memory").fetchone()[0] == 4
+    bconn.close()
+
+    # --all-projects clears the rest (backup count grows)
+    r = mem_cmd(["re-init", "--yes", "--all-projects"], str(tmp_data), s, proj)
+    assert r.returncode == 0
+    assert conn.execute("SELECT COUNT(*) FROM memory").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM candidate").fetchone()[0] == 0
+    assert conn.execute("SELECT value FROM meta WHERE key='schema_version'"
+                        ).fetchone()[0] == "2"

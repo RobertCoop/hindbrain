@@ -24,6 +24,13 @@ never write to them.
 
 Work in five passes. Do not save anything until pass 3.
 
+**Re-seeding a workspace that was already initialized?** Run `mem re-init`
+first — it previews what a wipe would erase (this workspace's memories,
+their links and access history, and its candidates; global and other-project
+rows are untouched); rerun with `--yes` to erase after a timestamped backup
+is taken automatically. Do not pass `--yes` without the user's explicit
+go-ahead: it is their memory store.
+
 **Pass 0 — Anchor the workspace.** Before anything else, run `mem anchor` at
 the workspace root (a no-op if `.hindbrain` already exists there). In a
 multi-repo workspace this is what makes every memory you seed — and every

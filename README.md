@@ -161,6 +161,8 @@ mem stats             # counts by kind/authority/status; acceptance metrics
 mem scout [--json] [--path DIR]   # read-only bootstrap survey of a project (see mem-init)
 mem anchor [--path DIR]           # write the .hindbrain workspace anchor (see Multi-repo workspaces)
 mem link A B [--strength 0.5]     # associative related_to link; mem unlink A B · mem links ID
+mem re-init [--yes] [--all-projects]  # erase memory for a clean bootstrap (preview without --yes;
+                                      # timestamped .bak taken before any deletion, always)
 ```
 
 **Associative links.** `related_to` links spread activation one hop: when a memory surfaces, each linked memory is scored at `anchor_score × strength` and run through the **same tau tiering** — a strong link (`strength ≥ tau_hi` at full anchor score) injects alongside its anchor, a moderate one appears in the remind tier flagged `· related`, and weak links stay dormant until the anchor itself scores high. A strong link can also *promote* a partner that surfaced on its own weaker score from remind into inject. All authority, dedup, and budget rules apply to spread hits unchanged (a `pending` partner still never surfaces command-adjacent).

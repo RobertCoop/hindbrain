@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 
@@ -771,6 +772,81 @@ def cmd_anchor(args, conn, cfg, session, project):
     return 0
 
 
+def _chunked(ids, n=500):
+    for i in range(0, len(ids), n):
+        yield ids[i:i + n]
+
+
+def cmd_reinit(args, conn, cfg, session, project):
+    # erase memory for a clean initialization. Workspace-scoped unless
+    # --all-projects; previews without --yes; ALWAYS backs up first.
+    if args.all_projects:
+        mem_ids = [r[0] for r in conn.execute("SELECT id FROM memory")]
+        scope_desc = "ALL projects (entire store)"
+    else:
+        mem_ids = [r[0] for r in conn.execute(
+            "SELECT id FROM memory WHERE project = ?", (project,))]
+        scope_desc = f"workspace {project} (global and other-project rows kept)"
+    cands = []
+    for r in conn.execute("SELECT id, payload FROM candidate"):
+        if args.all_projects:
+            cands.append(r["id"])
+            continue
+        try:
+            p = json.loads(r["payload"] or "{}")
+        except (ValueError, TypeError):
+            continue
+        if isinstance(p, dict) and p.get("project") == project:
+            cands.append(r["id"])
+
+    if not args.yes:
+        emit([f"re-init would erase from {scope_desc}:",
+              f"  {len(mem_ids)} memories (+ their access log and links)",
+              f"  {len(cands)} candidates"
+              + ("  + all journal rows" if args.all_projects else ""),
+              "nothing was deleted. To proceed:",
+              f"  mem re-init --yes{' --all-projects' if args.all_projects else ''}",
+              "a timestamped backup of the store is taken first, always"])
+        return 0
+
+    base = paths.db_path() + time.strftime(".reinit-%Y%m%d-%H%M%S")
+    backup = base + ".bak"
+    n = 1
+    while os.path.exists(backup):
+        backup = f"{base}-{n}.bak"
+        n += 1
+    try:
+        conn.execute("VACUUM INTO ?", (backup,))
+    except sqlite3.OperationalError as e:
+        return fail(f"backup failed ({e}); nothing was deleted")
+
+    for chunk in _chunked(mem_ids):
+        ph = ",".join("?" * len(chunk))
+        conn.execute(f"DELETE FROM access_log WHERE memory_id IN ({ph})", chunk)
+        conn.execute(f"DELETE FROM memory_link WHERE from_id IN ({ph}) "
+                     f"OR to_id IN ({ph})", (*chunk, *chunk))
+        conn.execute(f"DELETE FROM memory WHERE id IN ({ph})", chunk)
+    for chunk in _chunked(cands):
+        ph = ",".join("?" * len(chunk))
+        conn.execute(f"DELETE FROM candidate WHERE id IN ({ph})", chunk)
+    if args.all_projects:
+        conn.execute("DELETE FROM journal")
+        conn.execute("DELETE FROM meta WHERE key != 'schema_version'")
+    conn.commit()
+    db.journal(conn, session, "main", "reinit",
+               {"project": None if args.all_projects else project,
+                "memories": len(mem_ids), "candidates": len(cands),
+                "backup": backup})
+    log.metric({"hook": "mem", "cmd": "reinit", "session": session,
+                "memories": len(mem_ids)})
+    emit([f"erased {len(mem_ids)} memories and {len(cands)} candidates "
+          f"from {scope_desc}",
+          f"backup: {backup}",
+          "store is clean — run /hindbrain:mem-init to reseed "
+          "(restore any time: copy the backup over hindbrain.db)"])
+    return 0
+
+
 def build_parser():
     common = _Parser(add_help=False)
     common.add_argument("--db", default=argparse.SUPPRESS)
@@ -880,6 +956,13 @@ def build_parser():
     sp = sub.add_parser("links", parents=[common])
     sp.add_argument("id")
     sp.set_defaults(func=cmd_links)
+
+    sp = sub.add_parser("re-init", parents=[common])
+    sp.add_argument("--yes", action="store_true",
+                    help="actually erase (without it: preview only)")
+    sp.add_argument("--all-projects", action="store_true",
+                    help="erase the ENTIRE store, not just this workspace")
+    sp.set_defaults(func=cmd_reinit)
     return p
 
 
