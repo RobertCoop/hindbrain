@@ -163,7 +163,11 @@ mem anchor [--path DIR]           # write the .hindbrain workspace anchor (see M
 mem link A B [--strength 0.5]     # associative related_to link; mem unlink A B · mem links ID
 mem re-init [--yes] [--all-projects]  # erase memory for a clean bootstrap (preview without --yes;
                                       # timestamped .bak taken before any deletion, always)
+mem doctor [--json]               # health diagnosis: KPIs, store hygiene, and substrate liveness
+                                  # (which hooks actually fire, session binding, witness capability)
 ```
+
+**`mem doctor`** turns substrate drift into a diagnosis instead of a monthly checklist: every hook logs a metrics line per invocation, so a hook absent from `metrics.jsonl` demonstrably isn't firing on your build — doctor names it and what its absence breaks. It also reports the session-binding source (and whether it's race-free), witness capability for the current session, the inject-tier posture, deny rate / latency / Gini alerts, recent errors, and store hygiene (unarmed hazards, link hubs, stale candidates). `/hindbrain:mem-status` runs it for you.
 
 **Associative links.** `related_to` links spread activation one hop: when a memory surfaces, each linked memory is scored at `anchor_score × strength` and run through the **same tau tiering** — a strong link (`strength ≥ tau_hi` at full anchor score) injects alongside its anchor, a moderate one appears in the remind tier flagged `· related`, and weak links stay dormant until the anchor itself scores high. A strong link can also *promote* a partner that surfaced on its own weaker score from remind into inject. All authority, dedup, and budget rules apply to spread hits unchanged (a `pending` partner still never surfaces command-adjacent).
 

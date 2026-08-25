@@ -800,6 +800,18 @@ def cmd_anchor(args, conn, cfg, session, project):
     return 0
 
 
+def cmd_doctor(args, conn, cfg, session, project):
+    from lib import doctor
+    report = doctor.run_doctor(conn, cfg, session, project)
+    if args.as_json:
+        print(json.dumps(report, indent=1))
+    else:
+        emit(doctor.format_text(report))
+    log.metric({"hook": "mem", "cmd": "doctor", "session": session,
+                "warnings": report["warnings"], "failures": report["failures"]})
+    return 0
+
+
 def _chunked(ids, n=500):
     for i in range(0, len(ids), n):
         yield ids[i:i + n]
@@ -984,6 +996,10 @@ def build_parser():
     sp = sub.add_parser("links", parents=[common])
     sp.add_argument("id")
     sp.set_defaults(func=cmd_links)
+
+    sp = sub.add_parser("doctor", parents=[common])
+    sp.add_argument("--json", action="store_true", dest="as_json")
+    sp.set_defaults(func=cmd_doctor)
 
     sp = sub.add_parser("re-init", parents=[common])
     sp.add_argument("--yes", action="store_true",
