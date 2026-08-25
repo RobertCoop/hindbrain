@@ -465,7 +465,8 @@ def test_handshake_bridges_envless_shell(tmp_data, conn, proj, monkeypatch):
 
     env = os.environ.copy()
     for k in ("HINDBRAIN_DATA", "HINDBRAIN_DB", "HINDBRAIN_SESSION",
-              "CLAUDE_PLUGIN_DATA", "HINDBRAIN_DISABLE"):
+              "CLAUDE_PLUGIN_DATA", "HINDBRAIN_DISABLE",
+              "CLAUDE_CODE_SESSION_ID"):
         env.pop(k, None)
     env["HINDBRAIN_HANDSHAKE_DIR"] = hs_dir
     r = subprocess.run(
@@ -551,3 +552,82 @@ def test_reinit_preview_wipe_and_backup(tmp_data, conn, proj):
     assert conn.execute("SELECT COUNT(*) FROM candidate").fetchone()[0] == 0
     assert conn.execute("SELECT value FROM meta WHERE key='schema_version'"
                         ).fetchone()[0] == "2"
+
+
+def test_claude_code_session_id_resolution(tmp_data, conn, proj):
+    # harness-set CLAUDE_CODE_SESSION_ID beats the clobber-prone handshake
+    # and loses only to --session / HINDBRAIN_SESSION
+    from lib import paths as _paths
+    _paths.write_handshake(proj, "stale-clobbered-session")
+
+    env = os.environ.copy()
+    for k in ("HINDBRAIN_DB", "HINDBRAIN_DISABLE", "HINDBRAIN_SESSION"):
+        env.pop(k, None)
+    env["HINDBRAIN_DATA"] = str(tmp_data)
+    env["CLAUDE_CODE_SESSION_ID"] = "live-harness-session"
+    r = subprocess.run(
+        [sys.executable, MEM, "save", "--kind", "fact", "--scope", "project",
+         "the deploy queue drains through the eu-west-1 worker pool"],
+        capture_output=True, text=True, cwd=proj, env=env, timeout=60)
+    assert r.returncode == 0, r.stderr
+    row = conn.execute("SELECT source_session FROM memory "
+                       "ORDER BY created_at DESC").fetchone()
+    assert row["source_session"] == "live-harness-session"
+
+    # HINDBRAIN_SESSION still outranks it
+    env["HINDBRAIN_SESSION"] = "explicit-contract"
+    r = subprocess.run(
+        [sys.executable, MEM, "save", "--kind", "fact", "--scope", "project",
+         "the staging queue drains through the us-east-1 worker pool"],
+        capture_output=True, text=True, cwd=proj, env=env, timeout=60)
+    assert r.returncode == 0, r.stderr
+    row = conn.execute("SELECT source_session FROM memory "
+                       "ORDER BY created_at DESC, rowid DESC").fetchone()
+    assert row["source_session"] == "explicit-contract"
+
+
+def test_confirm_fallback_on_stale_session_binding(tmp_data, conn, proj):
+    # the live-usage failure: session binding resolved to a WRONG but
+    # nonempty session (concurrent session clobbered the handshake); the
+    # user's confirming turn was journaled under the real session id.
+    # confirm now falls back on NO MATCH, not only on zero rows.
+    import time as _t
+    from lib import ids as _ids
+    mid = _ids.ulid()
+    conn.execute(
+        "INSERT INTO memory(id, title, body, kind, scope_type, project, "
+        "authority, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (mid, "deploy needs vault", "deploys here need VAULT_ADDR exported "
+         "before make deploy", "gotcha", "project", proj, "pending",
+         int(_t.time())))
+    # stale session has an unrelated turn on record (nonzero rows!)
+    conn.execute(
+        "INSERT INTO journal(session_id, agent_id, ts, event, data) "
+        "VALUES (?,?,?,?,?)",
+        ("stale-session", "main", int(_t.time()),
+         "user_prompt", json.dumps({"text": "unrelated chatter about lunch",
+                                    "project": proj})))
+    # the real confirming turn lives under the live session id
+    conn.execute(
+        "INSERT INTO journal(session_id, agent_id, ts, event, data) "
+        "VALUES (?,?,?,?,?)",
+        ("live-session", "main", int(_t.time()),
+         "user_prompt", json.dumps({"text": f"yes, confirm {mid}",
+                                    "project": proj})))
+    conn.commit()
+
+    r = mem_cmd(["confirm", mid], str(tmp_data), "stale-session", proj)
+    assert r.returncode == 0 and "authority=full" in r.stdout
+
+    # and when nothing matches anywhere, the refusal names the likely cause
+    mid2 = _ids.ulid()
+    conn.execute(
+        "INSERT INTO memory(id, title, body, kind, scope_type, project, "
+        "authority, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (mid2, "unconfirmed note", "another note body long enough to save",
+         "fact", "project", proj, "pending", int(_t.time())))
+    conn.commit()
+    r = mem_cmd(["confirm", mid2], str(tmp_data), "stale-session", proj)
+    assert "downgraded to corroborate" in r.stdout
+    assert "session binding may be stale" in r.stdout
+    assert "--session $CLAUDE_CODE_SESSION_ID" in r.stdout

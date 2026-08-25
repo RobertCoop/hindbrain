@@ -17,6 +17,7 @@ def tmp_data(tmp_path, monkeypatch):
     monkeypatch.delenv("HINDBRAIN_DB", raising=False)
     monkeypatch.delenv("HINDBRAIN_DISABLE", raising=False)
     monkeypatch.delenv("HINDBRAIN_PROJECT", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     paths._reset_cache_for_tests()
     yield str(d)
     paths._reset_cache_for_tests()

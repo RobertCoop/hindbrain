@@ -548,12 +548,17 @@ def cmd_confirm(args, conn, cfg, session, project):
     lines = [f"no user confirmation found in the last 5 user turns — "
              f"downgraded to corroborate [{m['id']}] "
              f"(count={m['corroborations']}, authority={m['authority']})",
-             f"searched session {session}: {st} user turn(s) on record"
-             + (f"; plus {fb} recent same-project turn(s) via fallback" if fb else "")]
+             f"searched session {session}: {st} user turn(s), plus {fb} recent "
+             f"same-project turn(s) (any session) via fallback"]
     if st == 0 and fb == 0:
         lines.append("no user turns journaled for this session — hooks may be "
                      "journaling under a different session id (resume/fork), or "
                      "the message was a !-command (those never journal)")
+    elif fb > st:
+        lines.append("more recent turns exist under OTHER session ids — this "
+                     "shell's session binding may be stale (concurrent session "
+                     "overwrote the handshake); retry with "
+                     "--session $CLAUDE_CODE_SESSION_ID")
     lines.append("full authority requires a chat message from the user naming "
                  "this note (its id or most of its title) with a cue word, "
                  "within their last 5 turns — a !-command never counts")
@@ -978,7 +983,10 @@ def main(argv):
     project0 = paths.resolve_project(os.getcwd())
     session = (getattr(args, "session", None)
                or os.environ.get("HINDBRAIN_SESSION")
-               or paths.handshake_session(project0)  # env-less shell bridge
+               # harness-set in every Bash tool shell and race-free: unlike the
+               # handshake, no concurrent session can clobber it
+               or os.environ.get("CLAUDE_CODE_SESSION_ID")
+               or paths.handshake_session(project0)  # non-CC-harness bridge
                or "unbound")
     # never silently create a divergent store: no flag, no env, no handshake,
     # and the fallback DB doesn't exist yet -> say so before creating it

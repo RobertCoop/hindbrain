@@ -134,7 +134,8 @@ def test_mem_anchor_command(tmp_data, tmp_path):
 
     # a save from inside a nested repo now binds to the anchored workspace,
     # even with no handshake and no session env
-    env2 = {k: v for k, v in env.items() if k != "HINDBRAIN_SESSION"}
+    env2 = {k: v for k, v in env.items()
+            if k not in ("HINDBRAIN_SESSION", "CLAUDE_CODE_SESSION_ID")}
     r = subprocess.run(
         [sys.executable, mem, "save", "--kind", "fact", "--scope", "project",
          "integration tests for this workspace hit a localstack container"],

@@ -134,22 +134,35 @@ def observer_witnessed(candidate_row):
 
 
 def confirm_witness_stats(conn, session_id, project=None):
-    # diagnostics for mem confirm's refusal message
+    # diagnostics for mem confirm's refusal message: session turns, plus
+    # recent same-project turns (any session) — always computed, so a stale
+    # session binding shows up as fallback > session
     session_turns = len(_last_user_prompts(conn, session_id, 5))
-    fallback_turns = 0
-    if session_turns == 0 and project:
-        fallback_turns = len(recent_project_prompts(conn, project, n=5))
+    fallback_turns = len(recent_project_prompts(conn, project, n=5)) if project else 0
     return session_turns, fallback_turns
 
 
 def confirm_witnessed(mem, session_id, conn, cfg, project=None):
-    # AM-5: full only when a recent user turn names the memory (id or title words)
-    # with a confirmation cue, or restates the body itself (5.3 test).
+    # AM-5: full only when a recent user turn names the memory (id or title
+    # words) with a confirmation cue, or restates the body itself (5.3 test).
+    # Asymmetric fallback: when the session-scoped turns produce NO MATCH (not
+    # merely zero rows — a stale session binding yields wrong-but-nonempty
+    # rows), recent same-project turns are also scanned. The content
+    # requirement makes an accidental cross-session pass essentially
+    # impossible, and the evidence is still the user's own hook-journaled
+    # words. user_witnessed keeps its stricter zero-rows-only fallback.
+    if _confirm_scan(mem, _last_user_prompts(conn, session_id, 5)):
+        return True
+    if project:
+        return _confirm_scan(mem, recent_project_prompts(conn, project, n=5))
+    return False
+
+
+def _confirm_scan(mem, rows):
     body_words = content_words(mem.get("body") or "")
     title_words = content_words(mem.get("title") or "")
     mid = (mem.get("id") or "").lower()
     hashed_body = hashed_title = None
-    rows, _ = _witness_rows(conn, session_id, 5, project)
     for row in rows:
         if isinstance(row.get("hash_words"), list):
             u = set(row["hash_words"])

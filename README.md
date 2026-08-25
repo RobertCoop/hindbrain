@@ -141,7 +141,7 @@ hindbrain ships with `tau_hi = 9.9`, which means **nothing is ever injected** �
 
 ## The `mem` CLI
 
-Runs inside the agent's Bash tool (or your terminal). DB resolution: `--db` → `$HINDBRAIN_DB` → `$CLAUDE_PLUGIN_DATA/hindbrain.db` → `~/.claude/hindbrain/hindbrain.db`. Exit codes: 0 ok, 1 user error, 2 refused (secrets/policy).
+Runs inside the agent's Bash tool (or your terminal). DB resolution: `--db` → `$HINDBRAIN_DB` → `$CLAUDE_PLUGIN_DATA/hindbrain.db` → session handshake → `~/.claude/hindbrain/hindbrain.db`. Session resolution: `--session` → `$HINDBRAIN_SESSION` → `$CLAUDE_CODE_SESSION_ID` (set by Claude Code in every Bash tool shell; race-free under concurrent sessions) → fresh workspace handshake (last resort — last-writer-wins per project, so a concurrent session can overwrite it) → `unbound`. Exit codes: 0 ok, 1 user error, 2 refused (secrets/policy).
 
 ```
 mem save   --kind K --scope TYPE:VALUE [--tags a,b] [--hazard [--hazard-mode deny|ask]]
@@ -212,7 +212,7 @@ The Claude Code platform moves monthly; this build targets the hooks reference a
 | V | Verify | Where it lands | Result (CC version / date / verified-adjusted) |
 |---|---|---|---|
 | V1 | Current plugin install/marketplace flow and manifest fields | §3.2, `plugin.json`, README | *unverified* |
-| V2 | `$CLAUDE_ENV_FILE` exact write format and persistence semantics | `scripts/session_start.py` | *unverified* |
+| V2 | `$CLAUDE_ENV_FILE` exact write format and persistence semantics | `scripts/session_start.py` | *observed NOT reaching Bash tool shells in the field (0.2.x, Aug 2026): no HINDBRAIN_* vars present; `$CLAUDE_CODE_SESSION_ID` is the primary session bridge instead* |
 | V3 | `UserPromptSubmit` stdin carries the prompt under `prompt` | `scripts/prompt_gate.py` | *unverified* |
 | V4 | `PostToolUseFailure` stdin error-field names | `scripts/failure_gate.py` defensive chain order | *unverified* |
 | V5 | `Stop` stdin `stop_hook_active` field name/behavior | `scripts/stop_gate.py` guard | *unverified* |
