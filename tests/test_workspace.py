@@ -92,3 +92,57 @@ def test_hook_gate_sticky_across_nested_repo(tmp_data, tmp_path, conn):
     out = hook_output(proc, "UserPromptSubmit")
     assert out is not None
     assert mid in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_anchor_walk_and_precedence(tmp_data, tmp_path, monkeypatch):
+    ws = _mk_ws(tmp_path)
+    (ws / ".hindbrain").write_text("# anchor\n")
+    # anchor resolves from anywhere inside, with no handshake at all
+    assert paths.resolve_project(str(ws / "repoA" / "src")) == str(ws)
+    # anchor beats a fresher handshake claiming a narrower workspace
+    paths.write_handshake(str(ws / "repoA"), "sess-repo")
+    assert paths.resolve_project(str(ws / "repoA" / "src")) == str(ws)
+    # nearest anchor wins over an enclosing one
+    (ws / "repoB" / ".hindbrain").write_text("")
+    assert paths.resolve_project(str(ws / "repoB" / "src")) == str(ws / "repoB")
+    assert paths.resolve_project(str(ws / "repoA")) == str(ws)
+    # env override beats the anchor
+    monkeypatch.setenv("HINDBRAIN_PROJECT", str(ws / "repoA"))
+    assert paths.resolve_project(str(ws / "repoB")) == str(ws / "repoA")
+
+
+def test_mem_anchor_command(tmp_data, tmp_path):
+    import subprocess
+    ws = _mk_ws(tmp_path)
+    env = os.environ.copy()
+    env["HINDBRAIN_DATA"] = str(tmp_data)
+    env["HINDBRAIN_SESSION"] = "s-anchor"
+    mem = os.path.join(REPO, "bin", "mem")
+
+    # anchor the workspace from inside a nested repo via --path
+    r = subprocess.run([sys.executable, mem, "anchor", "--path", str(ws)],
+                       capture_output=True, text=True,
+                       cwd=str(ws / "repoA"), env=env, timeout=60)
+    assert r.returncode == 0 and f"anchored workspace at {ws}" in r.stdout
+    assert (ws / ".hindbrain").exists()
+
+    # idempotent
+    r = subprocess.run([sys.executable, mem, "anchor", "--path", str(ws)],
+                       capture_output=True, text=True,
+                       cwd=str(ws / "repoA"), env=env, timeout=60)
+    assert r.returncode == 0 and "already present" in r.stdout
+
+    # a save from inside a nested repo now binds to the anchored workspace,
+    # even with no handshake and no session env
+    env2 = {k: v for k, v in env.items() if k != "HINDBRAIN_SESSION"}
+    r = subprocess.run(
+        [sys.executable, mem, "save", "--kind", "fact", "--scope", "project",
+         "integration tests for this workspace hit a localstack container"],
+        capture_output=True, text=True, cwd=str(ws / "repoA" / "src"),
+        env=env2, timeout=60)
+    assert r.returncode == 0, r.stderr
+    import sqlite3
+    c = sqlite3.connect(os.path.join(str(tmp_data), "hindbrain.db"))
+    row = c.execute("SELECT project FROM memory ORDER BY created_at DESC "
+                    "LIMIT 1").fetchone()
+    assert row[0] == str(ws)

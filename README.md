@@ -159,6 +159,7 @@ mem pin ID | mem unpin ID
 mem audit ID          # lineage: source, supersession chain, corroborations, accesses
 mem stats             # counts by kind/authority/status; acceptance metrics
 mem scout [--json] [--path DIR]   # read-only bootstrap survey of a project (see mem-init)
+mem anchor [--path DIR]           # write the .hindbrain workspace anchor (see Multi-repo workspaces)
 ```
 
 Authority is granted from **hook-witnessed evidence**, never from agent flags: a claim matching a logged user turn gets `full`-track treatment, observer-witnessed fixes get `standard`, plain agent notes start `pending`, and web/tool-derived content is `quarantined` until corroborated across sessions. `--prior` sets only cold-start activation strength, never authority.
@@ -171,7 +172,9 @@ Three survey backends, picked automatically by capability: the **`mem-init-scan`
 
 ### Multi-repo workspaces and project binding
 
-A memory's `project` is the **workspace**: the directory the session launched in, as recorded by the session handshake. That binding is sticky — `cd`-ing into a nested repo (a parent dir holding several repos is fully supported) does not fork the project identity; hooks and the CLI resolve any path inside the workspace back to it. Scope path globs workspace-relative (`repoA/src/**`). `mem scout` aggregates git mining across immediate child repos when the workspace root isn't itself a repo. To pin project identity manually (e.g. to treat one nested repo as its own project), set `HINDBRAIN_PROJECT=/path/to/root`; a workspace handshake goes stale after 7 days without a session, after which resolution falls back to the git root of the current directory.
+A memory's `project` is the **workspace**. The durable way to declare one is the anchor file: run `mem anchor` (or touch `.hindbrain`) at the workspace root — resolution walks up from any cwd to the **nearest** directory containing `.hindbrain` and uses it, permanently and explicitly. A parent dir holding several repos is fully supported: anchor the parent once and every nested repo binds to it; `cd`-ing around never forks project identity. Scope path globs workspace-relative (`repoA/src/**`).
+
+Full resolution precedence: `HINDBRAIN_PROJECT` env → nearest `.hindbrain` anchor → freshest session handshake whose workspace contains cwd (written at SessionStart; stale after 7 days) → git root of cwd. The anchor file's presence is what matters; its content is reserved. `mem scout` aggregates git mining across immediate child repos when the workspace root isn't itself a repo.
 
 ## Consolidator
 

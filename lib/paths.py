@@ -63,12 +63,32 @@ def ancestor_handshake(cwd: str, max_age_s: int = WORKSPACE_FRESH_S) -> dict | N
     return best
 
 
+ANCHOR_NAME = ".hindbrain"
+
+
+def anchor_root(cwd: str) -> str | None:
+    # nearest ancestor (cwd included) containing the workspace anchor file.
+    # The anchor is the explicit, durable form of workspace identity: presence
+    # is what matters; file content is reserved and currently ignored.
+    cur = os.path.abspath(cwd or os.getcwd())
+    while True:
+        if os.path.exists(os.path.join(cur, ANCHOR_NAME)):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
 def resolve_project(cwd: str) -> str:
-    # HINDBRAIN_PROJECT env override -> containing workspace handshake ->
-    # git root of cwd (which is cwd itself outside any repo)
+    # HINDBRAIN_PROJECT env override -> .hindbrain anchor walk -> containing
+    # workspace handshake -> git root of cwd (cwd itself outside any repo)
     env = os.environ.get("HINDBRAIN_PROJECT")
     if env:
         return os.path.abspath(env)
+    anchored = anchor_root(cwd)
+    if anchored:
+        return anchored
     hs = ancestor_handshake(cwd)
     if hs:
         return os.path.abspath(hs["project"])

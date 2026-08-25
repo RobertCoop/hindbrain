@@ -686,6 +686,30 @@ def cmd_scout(args, conn, cfg, session, project):
     return 0
 
 
+def cmd_anchor(args, conn, cfg, session, project):
+    # write the .hindbrain workspace anchor; resolution walks up from any
+    # cwd to the nearest anchor, making workspace identity explicit
+    root = os.path.abspath(args.path) if args.path else project
+    if not os.path.isdir(root):
+        return fail(f"not a directory: {root}")
+    p = os.path.join(root, paths.ANCHOR_NAME)
+    existing = paths.anchor_root(os.getcwd())
+    if os.path.exists(p):
+        emit([f"anchor already present: {p}", f"workspace root: {root}"])
+        return 0
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("# hindbrain workspace anchor — marks this directory as the "
+                "workspace root for memory scoping.\n"
+                "# Presence is what matters; content is reserved.\n")
+    lines = [f"anchored workspace at {root}"]
+    if existing and existing != root:
+        lines.append(f"note: an enclosing anchor at {existing} exists; the "
+                     f"NEAREST anchor above a given cwd wins")
+    log.metric({"hook": "mem", "cmd": "anchor", "session": session})
+    emit(lines)
+    return 0
+
+
 def build_parser():
     common = _Parser(add_help=False)
     common.add_argument("--db", default=argparse.SUPPRESS)
@@ -772,8 +796,13 @@ def build_parser():
     sp = sub.add_parser("scout", parents=[common])
     sp.add_argument("--json", action="store_true", dest="as_json")
     sp.add_argument("--path", default=None,
-                    help="project root to survey (default: git root of cwd)")
+                    help="project root to survey (default: resolved workspace)")
     sp.set_defaults(func=cmd_scout)
+
+    sp = sub.add_parser("anchor", parents=[common])
+    sp.add_argument("--path", default=None,
+                    help="directory to anchor (default: resolved workspace)")
+    sp.set_defaults(func=cmd_anchor)
     return p
 
 

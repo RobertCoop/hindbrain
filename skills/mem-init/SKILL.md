@@ -24,6 +24,13 @@ never write to them.
 
 Work in five passes. Do not save anything until pass 3.
 
+**Pass 0 — Anchor the workspace.** Before anything else, run `mem anchor` at
+the workspace root (a no-op if `.hindbrain` already exists there). In a
+multi-repo workspace this is what makes every memory you seed — and every
+later save from inside a nested repo — bind to one stable project identity.
+Mention the created anchor file in your final report so the user can commit
+or ignore it as they prefer.
+
 ### Pass 1 — Survey (read, don't save)
 
 Three ways to run the survey, by decreasing leverage — use the best one your
