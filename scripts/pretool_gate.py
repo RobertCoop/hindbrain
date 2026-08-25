@@ -152,7 +152,7 @@ def _edit_branch(conn, cfg, st, session, agent, cwd, project, tool, ti, now):
     # §5 capability table: quarantined excluded from pretool_gate entirely
     hits = [h for h in hits if h.get("authority") != "quarantined"]
     SUMMARY["hits"] = len(hits)
-    taus = scoring.struggle_adjusted(cfg, st)
+    taus = scoring.effective_taus(cfg, st, conn)
     inject, remind = scoring.gate(hits, st, ctx, cfg, conn, taus, now)
     return _emit(conn, cfg, session, agent, inject, remind, q, now)
 
@@ -224,7 +224,7 @@ def _bash_branch(conn, cfg, st, session, agent, cwd, project, ti, now):
     q = querybuild.fts_query(" ".join(toks))
     hits = scoped + path_hits + (db.search(conn, q, project, k=12) if q else [])
     SUMMARY["hits"] = len(hits)
-    taus = scoring.struggle_adjusted(cfg, st)
+    taus = scoring.effective_taus(cfg, st, conn)
     inject, remind = scoring.gate(hits, st, ctx, cfg, conn, taus, now)
     return _emit(conn, cfg, session, agent, inject, remind, q, now)
 

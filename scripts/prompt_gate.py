@@ -208,7 +208,7 @@ def main(evt, cfg):
         if q:
             hits = db.search(conn, q, project, k=12)
             if hits:
-                taus = scoring.struggle_adjusted(cfg, st)
+                taus = scoring.effective_taus(cfg, st, conn)
                 ctx = scoring.Ctx(session=session, agent=agent, cwd=cwd,
                                   project=project, command_adjacent=False)
                 inject, remind = scoring.gate(hits, st, ctx, cfg, conn, taus, now)

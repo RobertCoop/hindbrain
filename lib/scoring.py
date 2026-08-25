@@ -71,6 +71,28 @@ def struggle_adjusted(cfg, st):
     return (th, tl)
 
 
+def effective_taus(cfg, st, conn):
+    # config is operator intent; meta.auto_tau_hi is learned state written by
+    # the consolidator's tuner. min() means a hand-set tau_hi always wins in
+    # the enabling direction, and [thresholds].auto_inject=false pins the
+    # config value outright. Struggle factor applies after, as always.
+    th = cfg["thresholds"]["tau_hi"]
+    tl = cfg["thresholds"]["tau_lo"]
+    if cfg["thresholds"].get("auto_inject", True) and conn is not None:
+        try:
+            row = conn.execute(
+                "SELECT value FROM meta WHERE key='auto_tau_hi'").fetchone()
+            if row is not None:
+                th = min(th, float(row[0]))
+        except Exception:
+            pass
+    if (st.get("struggle") or {}).get("active"):
+        f = cfg["thresholds"]["struggle_factor"]
+        th *= f
+        tl *= f
+    return (th, tl)
+
+
 def _trim_to_char_budgets(inject, bud):
     each = bud["inject_max_chars_each"]
     total = bud["inject_max_chars_total"]

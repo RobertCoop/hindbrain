@@ -437,6 +437,55 @@ def coactivation(conn, cfg, now):
             "links_removed": removed + dropped}
 
 
+# earn-the-inject-tier tuner (option B): learned state lives in meta, config
+# stays operator intent; gates take min(config.tau_hi, meta.auto_tau_hi).
+TUNE_MIN_SAMPLE = 20        # reminds in 30d before the rate means anything
+TUNE_ENABLE_ACCEPT = 0.15   # design target: enable inject above this
+TUNE_DISABLE_ACCEPT = 0.05  # post-enable collapse: hand the tier back
+TUNE_STEADY_TAU = 0.50      # the documented steady-state tau_hi
+TUNE_COOLDOWN = 7 * DAY     # at most one transition per week — no flapping
+
+
+def _meta_get(conn, key):
+    row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def autotune(conn, cfg, now, acceptance, reminded):
+    if not cfg["thresholds"].get("auto_inject", True):
+        return {"state": "off"}
+    current = _meta_get(conn, "auto_tau_hi")
+    last = int(_meta_get(conn, "tau_autotune_at") or 0)
+    if reminded < TUNE_MIN_SAMPLE:
+        return {"state": "enabled" if current else "watching",
+                "held": f"sample {reminded}<{TUNE_MIN_SAMPLE}"}
+    if now - last < TUNE_COOLDOWN and last:
+        return {"state": "enabled" if current else "watching",
+                "held": "cooldown"}
+    if current is None and acceptance >= TUNE_ENABLE_ACCEPT:
+        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES "
+                     "('auto_tau_hi', ?)", (f"{TUNE_STEADY_TAU:.2f}",))
+        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES "
+                     "('tau_autotune_at', ?)", (str(now),))
+        conn.commit()
+        db.journal(conn, "consolidator", "main", "autotune",
+                   {"transition": "inject_enabled", "acceptance": acceptance,
+                    "reminded_30d": reminded, "auto_tau_hi": TUNE_STEADY_TAU})
+        return {"state": "enabled", "transition": "inject_enabled",
+                "acceptance": acceptance}
+    if current is not None and acceptance < TUNE_DISABLE_ACCEPT:
+        conn.execute("DELETE FROM meta WHERE key='auto_tau_hi'")
+        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES "
+                     "('tau_autotune_at', ?)", (str(now),))
+        conn.commit()
+        db.journal(conn, "consolidator", "main", "autotune",
+                   {"transition": "inject_disabled", "acceptance": acceptance,
+                    "reminded_30d": reminded})
+        return {"state": "watching", "transition": "inject_disabled",
+                "acceptance": acceptance}
+    return {"state": "enabled" if current else "watching"}
+
+
 def metrics_rollup(conn, cfg, now):
     cut = now - 30 * DAY
     reminded = conn.execute(
@@ -483,8 +532,8 @@ def metrics_rollup(conn, cfg, now):
     for key, val in kv:
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, val))
     conn.commit()
-    return {"acceptance": acceptance, "gini": gini, "denies": denies,
-            "bash_calls": bash_calls, "deny_rate": deny_rate,
+    return {"acceptance": acceptance, "reminded": reminded, "gini": gini,
+            "denies": denies, "bash_calls": bash_calls, "deny_rate": deny_rate,
             "p95_gate_ms": p95, "store": store, "dispositions": dispositions}
 
 
@@ -501,10 +550,16 @@ def promotions_report(cfg, proposals, rollup):
             f"Bash calls; > 1) — hazard notes look miscalibrated (spec §14).")
     tau_hi = cfg.get("thresholds", {}).get("tau_hi", 0.5)
     if rollup["acceptance"] > 0.15 and tau_hi > 1.0:
-        alerts.append(
-            f"- Remind-tier acceptance is {rollup['acceptance']:.2f} (> 0.15) and "
-            f"tau_hi is still {tau_hi} (remind-only). Set tau_hi = 0.50 in "
-            f"config.toml to enable the inject tier (AM-8).")
+        if cfg.get("thresholds", {}).get("auto_inject", True):
+            alerts.append(
+                f"- Remind-tier acceptance is {rollup['acceptance']:.2f} (> 0.15): "
+                f"the tuner enables the inject tier automatically once the "
+                f"sample and cooldown allow (see mem stats).")
+        else:
+            alerts.append(
+                f"- Remind-tier acceptance is {rollup['acceptance']:.2f} (> 0.15) "
+                f"and tau_hi is still {tau_hi} (remind-only; auto_inject=false). "
+                f"Set tau_hi = 0.50 in config.toml to enable the inject tier (AM-8).")
     if not proposals and not alerts:
         return 0
     today = datetime.date.today().isoformat()
@@ -546,6 +601,11 @@ def run():
         grad = {"proposals": []}
     try:
         rollup = metrics_rollup(conn, cfg, now)
+        try:
+            summary["autotune"] = autotune(conn, cfg, now, rollup["acceptance"],
+                                           rollup["reminded"])
+        except Exception as e:
+            log.err(e, f"{NAME}.autotune")
         summary["report_lines"] = promotions_report(cfg, grad["proposals"], rollup)
         summary["acceptance"] = round(rollup["acceptance"], 4)
         summary["gini"] = round(rollup["gini"], 4)

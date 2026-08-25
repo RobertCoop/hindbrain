@@ -135,9 +135,9 @@ Resolution order: `$HINDBRAIN_DATA` → `$CLAUDE_PLUGIN_DATA` (plugin install) �
 | `security.llm_passes` | Enables `claude -p` consolidator passes. v1.1 only; default `false`. |
 | `general.enabled` | Config-level kill switch (in addition to the `HINDBRAIN_DISABLE=1` env switch). |
 
-### The remind-only default and flipping `tau_hi`
+### The remind-only default and the inject-tier tuner
 
-hindbrain ships with `tau_hi = 9.9`, which means **nothing is ever injected** — relevant notes only appear as one-line reminders the agent can fetch with `mem get`. This is deliberate: the inject tier must be earned. Watch `mem stats` (or the consolidator's promotions report): once **acceptance** (fetched-after-remind ÷ reminded, over 30 days) exceeds **0.15**, edit `<data>/config.toml` and set `tau_hi = 0.50`. The consolidator prints this exact suggestion into its report when the threshold is met.
+hindbrain ships with `tau_hi = 9.9`, which means **nothing is ever injected** — relevant notes only appear as one-line reminders the agent can fetch with `mem get`. This is deliberate: the inject tier must be earned — and the earning is now automatic. The consolidator's tuner watches **acceptance** (fetched-after-remind ÷ reminded, over 30 days) and, once it exceeds **0.15 with at least 20 reminds on record**, writes `auto_tau_hi = 0.50` into `meta`; the gates apply `min(config.tau_hi, meta.auto_tau_hi)` at read time, so the inject tier switches on without touching your config. Guards: no transition on thin samples, at most one transition per 7 days, and if post-enable acceptance collapses below 0.05 the tuner hands the tier back. Config remains operator intent in both directions: hand-set `tau_hi = 0.50` to enable immediately, or set `auto_inject = false` under `[thresholds]` to pin remind-only regardless of what the tuner learned. `mem stats` shows the current posture ("remind-only; tuner watching…" / "ENABLED by tuner since …") and every transition is journaled.
 
 ## The `mem` CLI
 

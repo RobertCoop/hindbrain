@@ -1,5 +1,8 @@
 [thresholds]
-tau_hi = 9.9           # remind-only rollout; set to 0.50 after acceptance > 0.15 — see mem stats
+tau_hi = 9.9           # remind-only rollout sentinel; the tuner lowers the EFFECTIVE value
+                       # (meta.auto_tau_hi) once acceptance is earned — see mem stats
+auto_inject = true     # let the consolidator enable the inject tier from acceptance data;
+                       # false pins remind-only regardless of what the tuner learned
 tau_lo = 0.25          # remind at/above
 struggle_factor = 0.75 # multiply both taus while struggling (§8.3)
 

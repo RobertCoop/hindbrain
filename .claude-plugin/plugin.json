@@ -1,6 +1,6 @@
 {
   "name": "hindbrain",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "The reflex-and-memory layer beneath the model's cortex: retrieval-gated inject / remind / deny tiers, prompted agent-authored writes, offline consolidation.",
   "author": {
     "name": "Quellant"

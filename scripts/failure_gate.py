@@ -47,7 +47,7 @@ def main(evt):
                       command_adjacent=(tool_name == "Bash"),
                       command=str(ti.get("command") or ""), tool_name=tool_name)
     inject, remind = scoring.gate(hits, st, ctx, cfg, conn,
-                                  scoring.struggle_adjusted(cfg, st))
+                                  scoring.effective_taus(cfg, st, conn))
 
     for h in inject:
         db.log_access(conn, h["id"], session, agent, "injected", query=q)

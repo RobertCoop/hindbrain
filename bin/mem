@@ -701,10 +701,33 @@ def cmd_stats(args, conn, cfg, session, project):
              f"by kind:      {counts('kind')}",
              f"by authority: {counts('authority')}",
              f"by status:    {counts('status')}"]
+    # inject-tier posture: config is operator intent, meta is the tuner
+    th, _tl = scoring.effective_taus(cfg, {}, conn)
+    auto = conn.execute(
+        "SELECT value FROM meta WHERE key='auto_tau_hi'").fetchone()
+    when = conn.execute(
+        "SELECT value FROM meta WHERE key='tau_autotune_at'").fetchone()
+    stamp = ""
+    if when:
+        try:
+            stamp = " since " + time.strftime(
+                "%Y-%m-%d", time.localtime(int(float(when["value"]))))
+        except (ValueError, TypeError):
+            pass
+    if not cfg["thresholds"].get("auto_inject", True):
+        lines.append(f"inject tier: tau_hi={th} (tuner disabled by config)")
+    elif auto:
+        lines.append(f"inject tier: ENABLED by tuner (effective tau_hi={th}"
+                     f"{stamp}; revert: auto_inject=false)")
+    elif th >= 1.0:
+        lines.append("inject tier: remind-only; tuner watching acceptance "
+                     "(enables at >0.15 with >=20 reminds/30d)")
+    else:
+        lines.append(f"inject tier: tau_hi={th} (set by operator config)")
     meta = conn.execute("SELECT key, value FROM meta ORDER BY key").fetchall()
     shown = 0
     for r in meta:
-        if r["key"] == "schema_version":
+        if r["key"] in ("schema_version", "auto_tau_hi", "tau_autotune_at"):
             continue
         if r["key"] == "last_consolidation":
             try:
