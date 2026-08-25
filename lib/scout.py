@@ -85,7 +85,7 @@ def confession_comments(root):
     return out[:MAX_PER_SOURCE]
 
 
-def task_runners(root):
+def _task_runners_one(root):
     out = []
     for name in ("Makefile", "makefile", "GNUmakefile", "Justfile", "justfile"):
         p = os.path.join(root, name)
@@ -127,7 +127,7 @@ def task_runners(root):
     return out[:MAX_PER_SOURCE]
 
 
-def ci_truth(root):
+def _ci_truth_one(root):
     out = []
     for wf_dir in (os.path.join(root, ".github", "workflows"),
                    os.path.join(root, ".gitlab-ci.d")):
@@ -214,7 +214,7 @@ def git_history(root):
                             if c >= 3]}
 
 
-def env_shape(root):
+def _env_shape_one(root):
     out = []
     for name in (".env.example", ".env.sample", ".env.template"):
         p = os.path.join(root, name)
@@ -248,6 +248,40 @@ def env_shape(root):
                 out.append({"file": "Dockerfile", "kind": "base_image",
                             "text": line.strip()[:200]})
     return out[:MAX_PER_SOURCE]
+
+
+def _scan_roots(root):
+    # the workspace root itself, plus (multi-repo workspace) its child repos —
+    # each repo carries its own Makefile/CI/env shape that a root-only scan
+    # would miss entirely
+    roots = [("", root)]
+    if not os.path.isdir(os.path.join(root, ".git")):
+        roots.extend(_nested_repos(root))
+    return roots
+
+
+def _aggregate(root, scan_one):
+    out = []
+    for label, path in _scan_roots(root):
+        for item in scan_one(path):
+            if label:
+                item["file"] = f"{label}/{item['file']}"
+            out.append(item)
+            if len(out) >= MAX_PER_SOURCE:
+                return out
+    return out
+
+
+def task_runners(root):
+    return _aggregate(root, _task_runners_one)
+
+
+def ci_truth(root):
+    return _aggregate(root, _ci_truth_one)
+
+
+def env_shape(root):
+    return _aggregate(root, _env_shape_one)
 
 
 def run_scout(root):

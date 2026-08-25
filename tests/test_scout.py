@@ -177,3 +177,31 @@ def test_scout_default_root_follows_anchor(tmp_path, tmp_data):
                        capture_output=True, text=True,
                        cwd=str(ws / "repoA" / "src"), env=env, timeout=60)
     assert json.loads(r.stdout)["project"] == str(ws / "repoA")
+
+
+def test_scanners_cover_nested_repos(tmp_path):
+    # in a multi-repo workspace, each child repo's task-runner/CI/env shape
+    # is scanned, with files prefixed by repo name; root-level files too
+    ws = tmp_path / "ws"
+    a = ws / "repoA"
+    b = ws / "repoB"
+    (a / ".git").mkdir(parents=True)
+    (b / ".git" ).mkdir(parents=True)
+    (a / "Makefile").write_text("test:\n\tPYTHONPATH=src pytest -x\n")
+    wf = b / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").write_text("env:\n  DEPLOY_REGION: eu-west-1\n")
+    (b / ".env.example").write_text("VAULT_ADDR=\n")
+    (ws / "docker-compose.yml").write_text("services:\n  web:\n"
+                                           '    ports:\n      - "8080:80"\n')
+
+    r = scout.run_scout(str(ws))
+    tr = {(t["file"], t["recipe"]) for t in r["task_runners"]}
+    assert any(f == "repoA/Makefile" and "PYTHONPATH=src" in rec
+               for f, rec in tr)
+    ci = {(c["file"], c["text"]) for c in r["ci"]}
+    assert any(f == "repoB/.github/workflows/ci.yml" and "DEPLOY_REGION" in t
+               for f, t in ci)
+    env = {(e["file"], e["kind"]) for e in r["env"]}
+    assert ("repoB/.env.example", "env_keys") in env
+    assert ("docker-compose.yml", "compose") in env  # root-level unprefixed

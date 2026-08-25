@@ -122,8 +122,10 @@ memory candidates from four read-only scouts of this project. Produce the FINAL 
    verified/prior accordingly. Downgrade prior to 1.0 for anything you could not verify.
 4. For each survivor: tighten the title to the line you'd want to see before repeating the
    mistake; ensure scope is the NARROWEST true scope (prefer path: scopes for file-keyed
-   knowledge — they now fire on edits, bash file args, and Read); ensure decisions tag the
-   rejected alternative; set hazard=true only for confirmed destructive footguns on
+   knowledge — they now fire on edits, bash file args, and Read); in a multi-repo workspace,
+   command scopes are workspace-global, so a command-keyed lesson about one repo must name
+   the repo in its title/body or use a path scope on that repo's files; ensure decisions tag
+   the rejected alternative; set hazard=true only for confirmed destructive footguns on
    consequential commands.
 5. Rank by expected value and keep AT MOST 30 (target 10-30; fewer is fine). Also list what
    you cut and why, in one line per theme (not per item).

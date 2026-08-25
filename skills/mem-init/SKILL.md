@@ -136,7 +136,12 @@ point for unproven bootstrap notes. Path globs are matched
 relative to the **workspace root** — the directory the session launched in.
 In a multi-repo workspace (a parent dir containing several repos), include
 the repo dir in the glob (`repoA/src/db/**`, not `src/db/**`), and consider
-a repo-name tag so prompt-tier retrieval can tell the repos apart.
+a repo-name tag so prompt-tier retrieval can tell the repos apart. Beware:
+**command scopes are workspace-global** — a `command:pytest` note seeded
+from repoA's evidence also surfaces when pytest runs in repoB. When a
+command-keyed lesson is really about one repo, either name the repo in the
+title/body ("in repoA, pytest needs …") so a wrong-repo surfacing is
+self-identifying, or use a path scope on that repo's files instead.
 
 **Strength** — three independent levers:
 
