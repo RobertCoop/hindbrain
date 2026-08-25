@@ -119,3 +119,22 @@ def render_deny(mem, now):
 
 def render_ask(mem):
     return ASK_REASON.format(id=mem.get("id", ""), body=mem.get("body") or "")
+
+
+LINT_HEADER = ("The response above conflicts with saved preference note(s) "
+               "(informational):")
+LINT_ITEM = '  [{id}] contains "{phrase}" — the note says: {excerpt}'
+LINT_FOOTER = ("Revise if appropriate; if the preference no longer holds, "
+               "mem refute <id>.")
+
+
+def render_lint(hits, now):
+    # hits: [(mem, phrase)]; declarative per §7.9 — states the conflict and
+    # the affordances, never commands a rewrite
+    lines = [LINT_HEADER]
+    for mem, phrase in hits:
+        lines.append(LINT_ITEM.format(
+            id=mem.get("id", ""), phrase=phrase,
+            excerpt=clip((mem.get("body") or "").strip(), 200)))
+    lines.append(LINT_FOOTER)
+    return "\n".join(lines)

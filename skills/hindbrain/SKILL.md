@@ -18,6 +18,7 @@ Save something only if it is **durable** (true next month), **non-obvious** (not
 - `mem corroborate <id>` when you re-confirm an existing note · `mem supersede <id> "new"` when it changed · `mem refute <id>` when it proved wrong
 - `mem link <a> <b> --strength 0.6` when two notes belong together — when one surfaces, its partner follows (strong links inject with their anchor, weaker ones remind) · `mem unlink <a> <b>` · `mem links <id>`
 - `--hazard` marks a note that should block a matching dangerous command (use sparingly; reserved for confirmed footguns).
+- A `preference` note that **quotes the exact phrase to avoid** (e.g. `never open with "I hope this finds you well"`) becomes Stop-lint enforceable: if a response contains the quoted phrase, a notice appears at end of turn so it can be revised before the user replies.
 
 ## How to respond to hindbrain output
 - A **reminder** lists note ids: fetch with `mem get` if plausibly relevant before proceeding.

@@ -39,6 +39,10 @@ max_per_session = 3
 max_candidates_shown = 3
 strict = false
 
+[lint]
+enabled = true         # Stop-lint: check last_assistant_message against preference notes
+max_per_turn = 2       # at most N lint notices per turn; each note lints once per session
+
 [struggle]
 fail_threshold = 3     # tool_fail events in window
 churn_threshold = 4    # edits to same file in window

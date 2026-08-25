@@ -15,7 +15,7 @@ DEFAULT_STATE = {"turn": 0, "injected": [], "reminded": [], "fetched": [],
                  "denied": {}, "last_nudge_turn": -10, "nudges": 0,
                  "struggle": {"fails": 0, "churn": {}, "streak": 0, "active": False,
                               "events": []},
-                 "tainted_turns": [], "ended": False}
+                 "tainted_turns": [], "linted": [], "ended": False}
 
 _SAFE = re.compile(r"[^A-Za-z0-9._-]")
 
