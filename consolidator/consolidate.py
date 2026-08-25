@@ -371,6 +371,72 @@ def _p95_gate_ms():
     return durs[min(len(durs) - 1, round(0.95 * (len(durs) - 1)))]
 
 
+def coactivation(conn, cfg, now):
+    # Hebbian related_to maintenance over a rolling 30-day window. The same
+    # recompute both strengthens and weakens: strength derives from current
+    # evidence, so links grow while pairs keep co-firing and shrink as that
+    # evidence ages out of the window.
+    #   reinforce: pairs co-firing (injected/reminded/fetched) in >= 2
+    #     distinct sessions get strength 0.2 + 0.1*(sessions-2), plus 0.05
+    #     per session where one of the pair was FETCHED (the strongest
+    #     usefulness signal), capped at 0.6 — high enough to inject beside a
+    #     very strong anchor, earned only through repeated fetched co-firing.
+    #   decay: an existing consolidator link whose pair produced NO co-firing
+    #     this window loses 30% per run and is dropped below 0.15.
+    #   cli links are pinned: never strengthened, decayed, or overwritten —
+    #     explicit intent is adjusted only by mem link/unlink.
+    # Links touching non-active memories are dropped outright.
+    cutoff = now - 30 * 86400
+    rows = conn.execute(
+        "SELECT session_id, memory_id, event FROM access_log WHERE ts >= ? AND "
+        "event IN ('injected','reminded','fetched') AND session_id IS NOT NULL",
+        (cutoff,)).fetchall()
+    by_session = {}
+    for r in rows:
+        d = by_session.setdefault(r["session_id"], {})
+        d[r["memory_id"]] = d.get(r["memory_id"]) or (r["event"] == "fetched")
+    pair_n, pair_fetch = {}, {}
+    for _sid, mems in by_session.items():
+        if len(mems) < 2 or len(mems) > 40:  # huge sessions are noise
+            continue
+        ms = sorted(mems)
+        for i, a in enumerate(ms):
+            for b in ms[i + 1:]:
+                pair_n[(a, b)] = pair_n.get((a, b), 0) + 1
+                if mems[a] or mems[b]:
+                    pair_fetch[(a, b)] = pair_fetch.get((a, b), 0) + 1
+    made = 0
+    for (a, b), n in pair_n.items():
+        if n < 2:
+            continue
+        strength = min(0.6, 0.2 + 0.1 * (n - 2) + 0.05 * pair_fetch.get((a, b), 0))
+        if db.upsert_link(conn, a, b, strength, source="consolidator") != "kept":
+            made += 1
+    # decay dormant consolidator links (no co-firing at all this window)
+    decayed = removed = 0
+    for r in conn.execute("SELECT from_id, to_id, strength FROM memory_link "
+                          "WHERE source='consolidator'").fetchall():
+        key = tuple(sorted((r["from_id"], r["to_id"])))
+        if pair_n.get(key):
+            continue
+        s = r["strength"] * 0.7
+        if s < 0.15:
+            conn.execute("DELETE FROM memory_link WHERE from_id=? AND to_id=?",
+                         (r["from_id"], r["to_id"]))
+            removed += 1
+        else:
+            conn.execute("UPDATE memory_link SET strength=? WHERE from_id=? "
+                         "AND to_id=?", (s, r["from_id"], r["to_id"]))
+            decayed += 1
+    dropped = conn.execute(
+        "DELETE FROM memory_link WHERE from_id IN "
+        "(SELECT id FROM memory WHERE status != 'active') OR to_id IN "
+        "(SELECT id FROM memory WHERE status != 'active')").rowcount
+    conn.commit()
+    return {"links_upserted": made, "links_decayed": decayed,
+            "links_removed": removed + dropped}
+
+
 def metrics_rollup(conn, cfg, now):
     cut = now - 30 * DAY
     reminded = conn.execute(
@@ -466,7 +532,8 @@ def run():
     now = int(time.time())
     summary = {}
     passes = [("gc", gc), ("expiry", expire), ("dedup", dedup),
-              ("contradictions", contradiction_report), ("promotion", promote)]
+              ("contradictions", contradiction_report), ("promotion", promote),
+              ("coactivation", coactivation)]
     for name, fn in passes:
         try:
             summary[name] = fn(conn, cfg, now)

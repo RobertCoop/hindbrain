@@ -16,6 +16,7 @@ Save something only if it is **durable** (true next month), **non-obvious** (not
   scopes: command:<head> | path:<glob> | tool:<pattern> | project | global
 - `mem search "terms"` · `mem get <id>` (fetch a reminded note) · `mem queue` / `mem drop <n>`
 - `mem corroborate <id>` when you re-confirm an existing note · `mem supersede <id> "new"` when it changed · `mem refute <id>` when it proved wrong
+- `mem link <a> <b> --strength 0.6` when two notes belong together — when one surfaces, its partner follows (strong links inject with their anchor, weaker ones remind) · `mem unlink <a> <b>` · `mem links <id>`
 - `--hazard` marks a note that should block a matching dangerous command (use sparingly; reserved for confirmed footguns).
 
 ## How to respond to hindbrain output

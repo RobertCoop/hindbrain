@@ -160,7 +160,12 @@ mem audit ID          # lineage: source, supersession chain, corroborations, acc
 mem stats             # counts by kind/authority/status; acceptance metrics
 mem scout [--json] [--path DIR]   # read-only bootstrap survey of a project (see mem-init)
 mem anchor [--path DIR]           # write the .hindbrain workspace anchor (see Multi-repo workspaces)
+mem link A B [--strength 0.5]     # associative related_to link; mem unlink A B · mem links ID
 ```
+
+**Associative links.** `related_to` links spread activation one hop: when a memory surfaces, each linked memory is scored at `anchor_score × strength` and run through the **same tau tiering** — a strong link (`strength ≥ tau_hi` at full anchor score) injects alongside its anchor, a moderate one appears in the remind tier flagged `· related`, and weak links stay dormant until the anchor itself scores high. A strong link can also *promote* a partner that surfaced on its own weaker score from remind into inject. All authority, dedup, and budget rules apply to spread hits unchanged (a `pending` partner still never surfaces command-adjacent).
+
+**Strength is self-tuning.** The consolidator recomputes consolidator-sourced links from a rolling 30-day window each run: pairs co-firing in ≥2 sessions get `0.2 + 0.1·(sessions−2) + 0.05·(sessions with a fetch)`, capped at 0.6 — so links strengthen while the association keeps proving out (fetches count extra, being the strongest usefulness signal) and weaken as the evidence ages out of the window. A link whose pair stops co-firing entirely decays 30% per run and is removed below 0.15. Links you set with `mem link` are pinned: never auto-strengthened, decayed, or overwritten — adjust them with `mem link`/`mem unlink`. Links touching superseded/expired/refuted memories are dropped.
 
 Authority is granted from **hook-witnessed evidence**, never from agent flags: a claim matching a logged user turn gets `full`-track treatment, observer-witnessed fixes get `standard`, plain agent notes start `pending`, and web/tool-derived content is `quarantined` until corroborated across sessions. `--prior` sets only cold-start activation strength, never authority.
 

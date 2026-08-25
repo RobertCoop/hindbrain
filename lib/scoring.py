@@ -115,20 +115,78 @@ def gate(hits, st, ctx, cfg, conn, taus, now=None):
         scored.append(h)
 
     inject, remind = [], []
-    for h in sorted(scored, key=lambda x: x["_score"], reverse=True):
+
+    def place(h, s):
+        # one tier decision for direct hits and association spreads alike
         if h.get("status") != "active":
-            continue
+            return
         auth = h.get("authority")
         if ctx.command_adjacent and auth in ("pending", "quarantined"):
-            continue
-        s = h["_score"]
+            return
         if auth == "quarantined":
             if s >= tl and h["id"] not in dedup_r and len(remind) < bud["remind_max_items"]:
                 h["_unverified"] = True
                 remind.append(h)
-            continue
+            return
         if s >= th and h["id"] not in dedup_i and len(inject) < bud["inject_max_items"]:
             inject.append(h)
         elif tl <= s < th and h["id"] not in dedup_r and len(remind) < bud["remind_max_items"]:
             remind.append(h)
+
+    for h in sorted(scored, key=lambda x: x["_score"], reverse=True):
+        place(h, h["_score"])
+
+    # ---- association spread (related_to), one hop ----
+    # a surfaced anchor activates its linked memories at anchor_score x
+    # strength, run through the SAME tau tiering; linked hits never spread
+    # further, and all authority/dedup/budget rules apply unchanged
+    injected_ids = {h["id"] for h in inject}
+    spreads = {}
+    for anchor in list(inject) + list(remind):
+        for other_id, strength, _src in _links(conn, anchor["id"]):
+            if other_id in injected_ids or strength <= 0.0:
+                continue
+            s = anchor["_score"] * strength
+            prev = spreads.get(other_id)
+            if prev is None or s > prev[0]:
+                spreads[other_id] = (s, anchor["id"])
+    for other_id, (s, via) in sorted(spreads.items(), key=lambda kv: -kv[1][0]):
+        if s < tl:
+            continue
+        in_remind = next((h for h in remind if h["id"] == other_id), None)
+        if in_remind is not None:
+            # a strong link promotes a directly-reminded partner into inject
+            # (effective score = max(direct, spread))
+            if (s >= th and s > in_remind["_score"]
+                    and other_id not in dedup_i
+                    and not in_remind.get("_unverified")
+                    and not (ctx.command_adjacent
+                             and in_remind.get("authority") in ("pending", "quarantined"))
+                    and len(inject) < bud["inject_max_items"]):
+                remind.remove(in_remind)
+                in_remind["_score"] = s
+                in_remind["_related_via"] = via
+                inject.append(in_remind)
+            continue
+        m = _get_memory(conn, other_id)
+        if m is None:
+            continue
+        m["_score"] = s
+        m["_related_via"] = via
+        place(m, s)
+
     return _trim_to_char_budgets(inject, bud), remind
+
+
+def _links(conn, mem_id):
+    try:
+        return db.links_for(conn, mem_id)
+    except Exception:
+        return []
+
+
+def _get_memory(conn, mem_id):
+    try:
+        return db.get_memory(conn, mem_id)
+    except Exception:
+        return None

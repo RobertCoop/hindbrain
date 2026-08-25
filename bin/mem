@@ -343,6 +343,65 @@ def cmd_get(args, conn, cfg, session, project):
         + (f" · supersedes {m['supersedes']}" if m["supersedes"] else ""),
         "body:", m["body"],
     ]
+    rel = db.links_for(conn, m["id"])[:4]
+    if rel:
+        lines.append("related: " + " · ".join(
+            f"[{oid}] ({s:.2f})" for oid, s, _src in rel))
+    emit(lines)
+    return 0
+
+
+def _link_pair(conn, id_a, id_b):
+    a = resolve_mem(conn, id_a)
+    b = resolve_mem(conn, id_b)
+    if a["id"] == b["id"]:
+        raise LookupError("cannot link a memory to itself")
+    return a, b
+
+
+def cmd_link(args, conn, cfg, session, project):
+    try:
+        a, b = _link_pair(conn, args.a, args.b)
+    except LookupError as e:
+        return fail(str(e))
+    strength = min(1.0, max(0.0, args.strength))
+    verdict = db.upsert_link(conn, a["id"], b["id"], strength, source="cli")
+    log.metric({"hook": "mem", "cmd": "link", "a": a["id"], "b": b["id"],
+                "strength": strength, "session": session})
+    th = cfg["thresholds"]
+    tier = ("inject-with-anchor" if strength >= th["tau_hi"]
+            else "remind-with-anchor" if strength >= th["tau_lo"]
+            else "below tau_lo: dormant until the anchor scores high enough")
+    emit([f"{verdict} link [{a['id']}] <-> [{b['id']}] strength={strength:.2f}",
+          f"spread behavior at full anchor score: {tier}"])
+    return 0
+
+
+def cmd_unlink(args, conn, cfg, session, project):
+    try:
+        a, b = _link_pair(conn, args.a, args.b)
+    except LookupError as e:
+        return fail(str(e))
+    if db.delete_link(conn, a["id"], b["id"]):
+        emit([f"unlinked [{a['id']}] <-> [{b['id']}]"])
+        return 0
+    return fail("no link between those memories")
+
+
+def cmd_links(args, conn, cfg, session, project):
+    try:
+        m = resolve_mem(conn, args.id)
+    except LookupError as e:
+        return fail(str(e))
+    rel = db.links_for(conn, m["id"])
+    if not rel:
+        emit([f"[{m['id']}] has no links"])
+        return 0
+    lines = [f"links for [{m['id']}] \"{m['title']}\":"]
+    for oid, s, src in rel:
+        other = db.get_memory(conn, oid)
+        title = (other or {}).get("title") or "(missing)"
+        lines.append(f"  [{oid}] {s:.2f} ({src}) \"{title}\"")
     emit(lines)
     return 0
 
@@ -609,6 +668,8 @@ def cmd_audit(args, conn, cfg, session, project):
         lines.append(f"superseded by: [{r['id']}] \"{r['title']}\" ({r['status']})")
     if m.get("invalidated_at"):
         lines.append(f"invalidated {render.age(m['invalidated_at'], now)} ago")
+    for oid, s, src in db.links_for(conn, m["id"])[:6]:
+        lines.append(f"related_to: [{oid}] strength={s:.2f} ({src})")
     acc = conn.execute(
         "SELECT ts, event, weight, session_id FROM access_log WHERE memory_id=? "
         "ORDER BY ts DESC LIMIT 10", (m["id"],)).fetchall()
@@ -803,6 +864,22 @@ def build_parser():
     sp.add_argument("--path", default=None,
                     help="directory to anchor (default: resolved workspace)")
     sp.set_defaults(func=cmd_anchor)
+
+    sp = sub.add_parser("link", parents=[common])
+    sp.add_argument("a")
+    sp.add_argument("b")
+    sp.add_argument("--strength", type=float, default=0.5,
+                    help="0..1; >= tau_hi injects with its anchor, >= tau_lo reminds")
+    sp.set_defaults(func=cmd_link)
+
+    sp = sub.add_parser("unlink", parents=[common])
+    sp.add_argument("a")
+    sp.add_argument("b")
+    sp.set_defaults(func=cmd_unlink)
+
+    sp = sub.add_parser("links", parents=[common])
+    sp.add_argument("id")
+    sp.set_defaults(func=cmd_links)
     return p
 
 

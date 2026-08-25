@@ -91,6 +91,17 @@ CREATE TABLE IF NOT EXISTS journal (
 );
 CREATE INDEX IF NOT EXISTS idx_jrn ON journal(session_id, ts);
 
+CREATE TABLE IF NOT EXISTS memory_link (
+  from_id    TEXT NOT NULL REFERENCES memory(id),
+  to_id      TEXT NOT NULL REFERENCES memory(id),
+  strength   REAL NOT NULL DEFAULT 0.5 CHECK (strength >= 0.0 AND strength <= 1.0),
+  source     TEXT NOT NULL DEFAULT 'cli' CHECK (source IN ('cli','consolidator')),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (from_id, to_id)
+);
+CREATE INDEX IF NOT EXISTS idx_link_from ON memory_link(from_id);
+CREATE INDEX IF NOT EXISTS idx_link_to   ON memory_link(to_id);
+
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
@@ -124,7 +135,9 @@ def connect(readonly: bool = False) -> sqlite3.Connection:
 def ensure_schema(conn) -> None:
     conn.executescript(DDL)
     conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', '1')")
+        "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', '2')")
+    conn.execute(
+        "UPDATE meta SET value='2' WHERE key='schema_version' AND value='1'")
     conn.commit()
 
 
@@ -212,3 +225,48 @@ def activation_events(conn, memory_id: str, window: int) -> list[tuple[int, floa
         "SELECT ts, weight FROM access_log WHERE memory_id = ? "
         "ORDER BY ts DESC LIMIT ?", (memory_id, window)).fetchall()
     return [(r["ts"], r["weight"]) for r in rows]
+
+
+def upsert_link(conn, a: str, b: str, strength: float,
+                source: str = "cli") -> str:
+    # one row per pair, either direction; cli-authored links outrank
+    # consolidator updates
+    strength = min(1.0, max(0.0, float(strength)))
+    row = conn.execute(
+        "SELECT from_id, to_id, source FROM memory_link WHERE "
+        "(from_id=? AND to_id=?) OR (from_id=? AND to_id=?)",
+        (a, b, b, a)).fetchone()
+    if row is not None:
+        if source == "consolidator" and row["source"] == "cli":
+            return "kept"  # never clobber an explicit human/agent link
+        conn.execute(
+            "UPDATE memory_link SET strength=?, source=? WHERE from_id=? AND to_id=?",
+            (strength, source, row["from_id"], row["to_id"]))
+        conn.commit()
+        return "updated"
+    conn.execute(
+        "INSERT INTO memory_link(from_id, to_id, strength, source, created_at) "
+        "VALUES (?,?,?,?,?)", (a, b, strength, source, int(time.time())))
+    conn.commit()
+    return "created"
+
+
+def delete_link(conn, a: str, b: str) -> bool:
+    cur = conn.execute(
+        "DELETE FROM memory_link WHERE (from_id=? AND to_id=?) OR "
+        "(from_id=? AND to_id=?)", (a, b, b, a))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def links_for(conn, mem_id: str) -> list[tuple[str, float, str]]:
+    # bidirectional: returns (other_id, strength, source), strongest first
+    try:
+        rows = conn.execute(
+            "SELECT from_id, to_id, strength, source FROM memory_link "
+            "WHERE from_id=? OR to_id=? ORDER BY strength DESC LIMIT 16",
+            (mem_id, mem_id)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [(r["to_id"] if r["from_id"] == mem_id else r["from_id"],
+             r["strength"], r["source"]) for r in rows]

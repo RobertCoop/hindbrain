@@ -60,7 +60,8 @@ def render_inject(hits, now):
 def render_remind(hits, now):
     lines = [REMIND_HEADER]
     for h in hits:
-        flag = " · unverified" if h.get("_unverified") else ""
+        flag = " · unverified" if h.get("_unverified") else (
+            " · related" if h.get("_related_via") else "")
         title = (h.get("title") or "").replace('"', "'")
         lines.append(REMIND_ITEM.format(
             id=h.get("id", ""), title=title, scope=_scope(h),
