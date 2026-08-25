@@ -147,3 +147,33 @@ def test_scout_multi_repo_workspace(tmp_path, tmp_data):
     assert "repoA: " in sus and "repoB: " in sus
     churn = {c["file"] for c in g["churn_files"]}
     assert "repoA/f.py" in churn and "repoB/f.py" in churn
+
+
+def test_scout_default_root_follows_anchor(tmp_path, tmp_data):
+    # run from deep inside a nested repo: the anchor at the workspace root
+    # decides scout's default root, and the survey covers the sibling repo
+    ws = tmp_path / "ws"
+    (ws / "repoA" / "src").mkdir(parents=True)
+    (ws / "repoB").mkdir()
+    (ws / ".hindbrain").write_text("# anchor\n")
+    (ws / "repoB" / "worker.py").write_text(
+        "# WORKAROUND: the queue consumer must not start before redis is up\n")
+    env = dict(os.environ, HINDBRAIN_DATA=str(tmp_data))
+    env.pop("HINDBRAIN_DB", None)
+    env.pop("HINDBRAIN_DISABLE", None)
+    env.pop("HINDBRAIN_PROJECT", None)
+    r = subprocess.run([sys.executable, MEM, "scout", "--json"],
+                       capture_output=True, text=True,
+                       cwd=str(ws / "repoA" / "src"), env=env, timeout=60)
+    assert r.returncode == 0, r.stderr
+    d = json.loads(r.stdout)
+    assert d["project"] == str(ws)
+    files = {c["file"] for c in d["confession_comments"]}
+    assert "repoB/worker.py" in files  # sibling repo swept from the anchor root
+
+    # explicit --path still overrides the anchor
+    r = subprocess.run([sys.executable, MEM, "scout", "--json", "--path",
+                        str(ws / "repoA")],
+                       capture_output=True, text=True,
+                       cwd=str(ws / "repoA" / "src"), env=env, timeout=60)
+    assert json.loads(r.stdout)["project"] == str(ws / "repoA")
